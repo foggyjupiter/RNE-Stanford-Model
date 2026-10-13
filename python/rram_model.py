@@ -52,7 +52,7 @@ class Params:
 	deltaCF: float = 1e-4	# CF width varying rate, delta_r in eq. (9) [m/s]
 	crit_x: float = 0.5e-9	# gap variation fitting point [m] (not used, see A9)
 	# Not in Table 3 -- assumptions
-	gT: float = 0.25e-9	# hopping decay length in eq. (6) [m] (A3)
+	gT: float = 0.25e-9	# hopping decay length in eq. (6) [m], fitted value (A3)
 	dr: float = 0.25e-9	# lateral growth step Delta_r in eq. (2) [m] (A4)
 	# Professor's request: filament density and cell area (A10)
 	n_f: float = 1e16	# filaments per unit area [1/m^2]
@@ -66,7 +66,8 @@ class Params:
 
 DEFAULT = Params()
 
-RS_DEFAULT = 18e3	# default SET compliance resistor [ohm], gives ~100 uA at 2.5 V (A15)
+RS_SWEEP = 18e3	# default SET compliance resistor for I-V sweeps [ohm], ~100 uA at 2.5 V (A15)
+RS_PULSE = 10e3	# default SET compliance resistor for pulses [ohm], ~100 uA at 2 V (A15)
 
 # Initial states, manual Table 3: x0 in {L0, 0}, w0 in {0.5 nm, WCF}
 INIT_HRS = (DEFAULT.L0, 0.5e-9)	# (x0 [m], w0 [m]) before SET

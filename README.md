@@ -21,6 +21,13 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # ~4 min, 
 - `python/reference.ipynb`: validation notebook (sweep, ramp rate, pulses, read resistance, fixed-state mode, parallel filaments, variability)
 - `python/golden/`: expected-value CSVs for Stage 2 (see `golden/README.md`)
 
+## Model limitations
+
+- **Multi-cycle behavior is approximate.** The source paper [2] has no equation for filament-width change during RESET, so the width stays as-is after RESET. From the 2nd cycle on, SET is more gradual and V_SET higher than measurements (ASSUMPTIONS A16).
+- `gT` (hopping decay length, 0.25 nm) is a **fitted value** given in neither the manual nor the paper (A3).
+- N parallel filaments are treated as identical and **competition between filaments is ignored** (A10).
+- `Weff` and `crit_x` from Table 3 are unused because there is no corresponding equation (A9).
+
 ## References (`refs/`, not committed — license)
 
 The `refs/` folder is in `.gitignore`. Place these files there locally:
