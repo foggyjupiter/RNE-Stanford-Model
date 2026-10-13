@@ -37,3 +37,13 @@ The `.va` file was not opened. Neither [M] nor [D] states the items below, or th
 - The integrator restarts at waveform corners and at each χ(t) update
 - Inner solve (V_gap) and outer solve (V_sw, series resistance) both use `brentq`, `xtol = 1e-15`, `rtol = 1e-12`
 - Inside the RHS, exponent arguments are capped at 700 to avoid overflow at far-off Newton trial points (no effect on physical points)
+
+## Numerical settings (TypeScript core, `web/src/model/`)
+
+- Integrator: Rosenbrock ROS2 (Verwer et al. 1999), L-stable, order 2 with an embedded order-1 error estimate. Time is autonomized as a state so ∂f/∂t is included via the Jacobian. Jacobian by forward differences
+- `rtol = 1e-6`, `atol` same as Python. `maxStep`: DC `t_end/2000`, pulse 0.1 ns
+- **Step cap in the switching region:** x and w may change by at most `a/10 = 0.025 nm` per step (the step is rejected and shrunk if exceeded)
+- Restarts at waveform corners and χ(t) updates, same as Python
+- Inner and outer solves: safeguarded Newton (analytic derivative, falls back to bisection when it leaves the bracket), relative tolerance ~1e-13
+- Random numbers: mulberry32 + Box–Muller. Not identical to Python's numpy sequence, so variability results are compared only statistically and for seed reproducibility, not against golden values
+- Golden tolerances (rationale in the test-file comments): algebraic parts relative 1e-8; transient relative 1e-3 within a ±1 output-sample window. A 0.1% change to Ea fails 6 of the 8 golden cases (sensitivity check)

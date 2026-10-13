@@ -6,7 +6,7 @@ Project guidelines: `CLAUDE.md`. Assumptions and their rationale: `ASSUMPTIONS.m
 ## Status
 
 - [x] Stage 1: Python reference (`python/`)
-- [ ] Stage 2: TypeScript core (`web/src/model/`)
+- [x] Stage 2: TypeScript core (`web/src/model/`)
 - [ ] Stage 3: UI (`web/`)
 
 ## Stage 1 — Python reference
@@ -20,6 +20,21 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # ~4 min, 
 - `python/rram_model.py`: model core (eqs. 1–11, Table 3 defaults, SI units)
 - `python/reference.ipynb`: validation notebook (sweep, ramp rate, pulses, read resistance, fixed-state mode, parallel filaments, variability)
 - `python/golden/`: expected-value CSVs for Stage 2 (see `golden/README.md`)
+
+## Stage 2 — TypeScript core
+
+```bash
+cd web
+npm install
+npm test          # vitest: compares against python/golden
+npm run typecheck
+```
+
+- `params.ts`: Table 3 parameters, constants, defaults (`RS_SWEEP` 18 kΩ, `RS_PULSE` 10 kΩ)
+- `physics.ts`: conduction (eqs. 6–7, series inner solve), temperature (5), rates (1)–(4), (8)–(9)
+- `solver.ts`: adaptive Rosenbrock ROS2 (L-stable) + per-step state-change cap
+- `simulate.ts`: waveforms, transient simulation, read resistance, fixed-state mode, variability (10)–(11)
+- `jobs.ts` / `worker.ts` / `client.ts`: serializable jobs, Web Worker, promise client (a new request cancels the previous one)
 
 ## Model limitations
 
