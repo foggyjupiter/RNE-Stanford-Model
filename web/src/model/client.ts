@@ -1,13 +1,13 @@
-// Promise wrapper around the model Web Worker.
-// Only the latest request matters (slider drags): a new run() terminates a busy worker,
-// and the superseded promise rejects with SupersededError.
+// 모델 Web Worker를 감싼 Promise 래퍼.
+// 마지막 요청만 의미가 있다(슬라이더 드래그): 계산 중에 run()이 새로 오면 워커를 종료하고,
+// 밀려난 Promise는 SupersededError로 reject된다.
 
 import { type Job, type JobOutput } from "./jobs";
 import { type WorkerRequest, type WorkerResponse } from "./worker";
 
 export class SupersededError extends Error {
 	constructor() {
-		super("superseded by a newer request");
+		super("더 새로운 요청으로 대체됨");
 	}
 }
 
@@ -36,7 +36,7 @@ export class ModelClient {
 
 	run(job: Job): Promise<JobOutput> {
 		if (this.pending) {
-			// abandon the running computation: a worker cannot be interrupted mid-job
+			// 진행 중인 계산을 버린다: 워커는 작업 도중에 중단시킬 수 없다
 			this.worker?.terminate();
 			this.worker = null;
 			this.pending.reject(new SupersededError());

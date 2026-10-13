@@ -1,4 +1,4 @@
-// Serializable job descriptions and a pure runner. Used directly in tests and inside the Web Worker.
+// 직렬화 가능한 작업 정의와 순수 실행 함수. 테스트와 Web Worker 안에서 그대로 쓴다.
 
 import { type Params } from "./params";
 import { ivFixedState, normalRng, pulseWaveform, readResistance, sampleCycleParams, simulate, sweepWaveform, switchingVoltage, type SimOptions, type SimResult, type Variability, type Waveform } from "./simulate";
@@ -19,17 +19,17 @@ export interface TransientJob {
 	w0: number;	// [m]
 	params: Params;
 	opt: Omit<SimOptions, "rng">;
-	cycles: number;	// repeated cycles, each starting from the previous end state
-	variability?: Variability;	// enables eqs. (8)-(11); needs opt.noiseDt
+	cycles: number;	// 반복 사이클 수, 각 사이클은 직전 사이클의 끝 상태에서 시작
+	variability?: Variability;	// 식 (8)-(11) 활성화, opt.noiseDt 필요
 	seed?: number;
-	vRead?: number;	// read voltage for per-cycle resistances [V], default 0.2
+	vRead?: number;	// 사이클별 저항을 읽는 전압 [V], 기본 0.2
 }
 
 export interface FixedJob {
 	kind: "fixed";
 	v: number[];	// [V]
-	x: number;	// gap [m]
-	aCf: number;	// CF area [m^2]
+	x: number;	// 갭 [m]
+	aCf: number;	// CF 면적 [m^2]
 	params: Params;
 	rs?: number;	// [ohm]
 }
@@ -37,8 +37,8 @@ export interface FixedJob {
 export type Job = TransientJob | FixedJob;
 
 export interface CycleSummary {
-	rLrs: number;	// R at vRead after the positive half (state at the zero crossing), NaN for pulses [ohm]
-	rEnd: number;	// R at vRead at the end of the cycle [ohm]
+	rLrs: number;	// 양의 반주기 뒤(0 V 통과 시점 상태) vRead에서의 저항, 펄스는 NaN [ohm]
+	rEnd: number;	// 사이클 끝 상태의 vRead 저항 [ohm]
 	vSet: number;	// [V]
 	vReset: number;	// [V]
 }
@@ -73,7 +73,7 @@ export function runJob(job: Job): JobOutput {
 		cycles.push(r);
 		let rLrs = NaN;
 		if (job.wave.kind === "sweep") {
-			// state when the applied voltage returns to 0 after the SET branch (t = 2*tRamp)
+			// SET 구간 뒤 인가 전압이 0으로 돌아온 시점(t = 2*tRamp)의 상태
 			const tMid = 2 * job.wave.tRamp;
 			let k = 0;
 			while (k < r.t.length - 1 && r.t[k] < tMid) k++;

@@ -1,10 +1,10 @@
-// runJob is what the Web Worker executes; it must reproduce direct simulate() calls.
+// runJob은 Web Worker가 실행하는 함수이므로 simulate()를 직접 부른 결과와 같아야 한다.
 
 import { describe, expect, test } from "vitest";
 import { DEFAULT, DEFAULT_VARIABILITY, INIT_HRS, RS_SWEEP, ivFixedState, runJob, simulate, sweepWaveform } from "../src/model";
 
 describe("runJob", () => {
-	test("deterministic transient job equals simulate(), cycles chain end states", () => {
+	test("결정론적 과도 작업은 simulate()와 같고, 사이클은 끝 상태를 이어받는다", () => {
 		const out = runJob({
 			kind: "transient",
 			wave: { kind: "sweep", vSet: 2.5, vReset: -2.5, tRamp: 10e-6 },
@@ -18,10 +18,10 @@ describe("runJob", () => {
 		const direct = simulate(sweepWaveform(2.5, -2.5, 10e-6), INIT_HRS[0], INIT_HRS[1], DEFAULT, { rs: RS_SWEEP });
 		expect(Array.from(out.cycles[0].i)).toEqual(Array.from(direct.i));
 		expect(out.cycles[1].x[0]).toBe(direct.x[direct.x.length - 1]);
-		expect(out.summary[0].rEnd / out.summary[0].rLrs).toBeGreaterThan(10);	// RESET raised R
+		expect(out.summary[0].rEnd / out.summary[0].rLrs).toBeGreaterThan(10);	// RESET으로 R이 커짐
 	});
 
-	test("variability job is reproducible by seed", () => {
+	test("변동성 작업은 시드로 재현된다", () => {
 		const job = {
 			kind: "transient" as const,
 			wave: { kind: "sweep" as const, vSet: 2.5, vReset: -2.5, tRamp: 10e-6 },
@@ -39,7 +39,7 @@ describe("runJob", () => {
 		expect(a.summary).toEqual(b.summary);
 	});
 
-	test("fixed job equals ivFixedState()", () => {
+	test("고정 상태 작업은 ivFixedState()와 같다", () => {
 		const v = [-0.5, -0.1, 0, 0.1, 0.5];
 		const out = runJob({ kind: "fixed", v, x: 1e-9, aCf: 20e-18, params: DEFAULT });
 		if (out.kind !== "fixed") throw new Error("kind");

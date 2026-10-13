@@ -1,4 +1,4 @@
-// Loader for python/golden/*.csv (header line + numeric rows).
+// python/golden/*.csv 로더 (헤더 한 줄 + 숫자 행).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";

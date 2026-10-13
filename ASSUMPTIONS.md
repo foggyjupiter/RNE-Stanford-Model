@@ -1,49 +1,49 @@
-# ASSUMPTIONS
+# 가정 목록 (ASSUMPTIONS)
 
-Sources used:
+사용한 자료:
 
-- **[M]** PKU-Stanford RRAM Model v2.0Beta Quick User Guide: Table 2 (scope), Table 3 (parameters), Fig. 3 and 4 (target results), sample HSPICE decks (`.sp`, circuit level only)
-- **[D]** H. Li et al., "Variation-aware, reliability-emphasized design and optimization of RRAM using SPICE model", DATE 2015 (manual reference [2]), eqs. (1)–(11)
+- **[M]** PKU-Stanford RRAM Model v2.0Beta Quick User Guide: Table 2 (적용 범위), Table 3 (파라미터), Fig. 3·4 (목표 결과), 샘플 HSPICE 덱 (`.sp`, 회로 수준만 참고)
+- **[D]** H. Li et al., "Variation-aware, reliability-emphasized design and optimization of RRAM using SPICE model", DATE 2015 (매뉴얼 참고문헌 [2]), 식 (1)–(11)
 
-The `.va` file was not opened. Neither [M] nor [D] states the items below, or they contradict each other. Each one records the choice made, its rationale and where it appears in the code (`python/rram_model.py`).
+`.va` 파일은 열지 않았습니다. 아래 항목은 [M]과 [D] 어디에도 나와 있지 않거나 두 자료가 서로 어긋나는 부분입니다. 항목마다 택한 방식, 근거, 코드(`python/rram_model.py`)에서의 위치를 적었습니다.
 
-| ID | Item | Choice | Rationale / impact |
+| ID | 항목 | 택한 방식 | 근거 / 영향 |
 |---|---|---|---|
-| A1 | CF area formula | `w` = CF **diameter** (manual's "CF width"), `A = π·w²/4` | [D] eqs. (6),(7) write `π r²/4` while calling `r` the "CF radius", which is inconsistent. Since [M] Table 3 uses width `w` (WCF, w0), I treat the `/4` form as diameter-based. (For radius r it would be `π r²`.) R(x=0, w=5 nm) ≈ 5 kΩ. **Confirmed by the user**: the manual calls it width, and in fixed-state mode the input area must be the actual geometric area. (Reading the formula literally would make R 4× larger, ~20 kΩ.) |
-| A2 | CF–gap connection | One filament = CF segment (eq. 7, length `L0 − x`) **in series** with the gap (eq. 6). `V = V_CF + V_gap` with equal current, `V_gap` solved by `brentq` | [D] Fig. 2(a) shows only "metallic path + hopping path". Eq. (7) using length `g0 − g` points to a series structure. `g0` is taken to be `L0`. |
-| A3 | Hopping decay length `gT` | `gT = 0.25 nm`, **fitted value** (user-confirmed; adjustable in the UI) | Appears in eq. (6) but is in neither Table 3 nor [D]. Chosen so the HRS read resistance is ~MΩ (an order of magnitude similar to Fig. 3). **Review note on whether it is the same quantity as `a`:** I think they are physically different. `a` is the distance a VO moves in one hop (the length prefactor of the ion-migration rates in eqs. 1, 3, 4). `gT` is the characteristic length over which the hopping/tunneling current through the gap decays exponentially; it is set by the extent of electron wavefunctions at trap sites (the localization length) and is independent of the ion step size. The two only happen to share a value (0.25 nm) because the same order of magnitude was assumed, so they are kept as separate parameters. |
-| A4 | Lateral growth step `Δr` in eq. (2) | `Δr = 0.25 nm` (same as `a`) | Not defined in [D]. Assumed to be one lattice step, the same as the VO spacing. |
-| A5 | Field `E` | `E = |V_sw| / L0` (average field across the switching layer). `V` in eq. (3) is `|V_sw|` | [D] does not define E. `V_gap/x` diverges as x→0, so I use the average field. |
-| A6 | Temperature | `T = T0 + |I_f · V_sw| · Rth`, per filament (eq. 5) | Uses each filament's own power. No thermal crosstalk between filaments. |
-| A7 | Two-step SET | V>0: the gap closes first (eq. 1); lateral growth (eq. 2) applies once the gap is closed. The switch is blended linearly over `EPS_X = 2.5 pm (0.01·a)` | [D] says "two-step process" without stating the switching condition. The blend avoids a discontinuous RHS (BDF convergence). |
-| A8 | State bounds | `x ∈ [0, L0]`, `w ∈ [W_MIN = 0.1 nm, WCF]`. Rates are cut off by soft walls `EPS_X` wide | When noise (eqs. 8–9) pushed against a hard clip the solution chattered and BDF failed (`Required step size is less than spacing…`); the soft walls fixed this. The effect on the deterministic results is below the output precision. |
-| A9 | `Weff`, `crit_x` | **Not used**. Kept in the code's Params but **excluded from the UI** (user decision) | Listed in Table 3 but there is no corresponding equation in [D]. |
-| A10 | Filament density (professor's request) | `N = max(1, round(n_f · A_cell))` **identical filaments in parallel**, with the single-filament (x, w) dynamics unchanged. Compliance is solved with the total current `N·I_f`. Defaults `A_cell = 10 nm × 10 nm` ([D] ~10 nm device), `n_f = 1e16 m⁻²` → N = 1 | **Simplification that ignores competition between filaments** (in reality one dominant filament takes over current and heat). [M] Table 2 also says "one dominant filament". `RH`, `CP` and `RL` are cell-level and do not scale with N. |
-| A11 | Parasitic topology | applied voltage — `RL + Rs` (series) — node `V_sw` — [switching element ∥ `RH` ∥ `CP`] | Based on [D] Fig. 2(b) and the sample decks. The decks have 20 Ω on both sides, but Table 3 defines a single RL, so RL is used once. **CP:** included in the pulse simulation as a state variable (`include_cp=True`); neglected in the DC sweep because the time constant (RL+Rs)·CP ≈ 0.36 ns ≪ ramp time, so `V_sw` is solved algebraically each step as required. |
-| A12 | Noise χ(t) in eqs. (8),(9) | Piecewise-constant Gaussian (unit RMS) redrawn every `noise_dt = 0.2 µs` | The sample DC decks use a `.tran` step of 0.2 µs. The amplitude scales as `δ·sqrt(noise_dt·t)`, so the choice of `noise_dt` changes the size of the scatter. Applied to both SET and RESET, following the paper's equations. |
-| A13 | Energy-barrier scatter in eqs. (10),(11) | Redrawn every cycle as Ea, Ei, Eh ~ N(μ, σ), with σ = 0.02 eV each | [D] gives no σ. Chosen so the V_SET and resistance spreads are similar in size to [D] Fig. 5–6. |
-| A14 | Polarity of series resistance | `Rs` applies only when the applied voltage ≥ 0 (SET); `Rs_reset` (default 0) applies when < 0 | In a 1T1R the transistor limits only SET current; during RESET the gate is fully on (sample decks: RESET pulse with no transistor). With the same Rs in both directions, RESET does not happen. |
-| A15 | Default `Rs` (per mode, user decision) | I-V sweep **18 kΩ** (`RS_SWEEP`), pulse **10 kΩ** (`RS_PULSE`) | Sweep: current saturates near 100 µA at 2.5 V. Pulse: ~85 µA at 2 V, similar in size to Fig. 4 (1T1R, ~100 µA). Both stand in for the sample deck's 1T1R (Vselect = 1.28 V). |
-| A16 | CF width during RESET | Unchanged; **no width-shrink rule is invented** (user decision). **Multi-cycle behavior is approximate**, and the UI/README say so. To be revisited once [4] (EDL 2014) is available | [D] gives only gap equations for RESET (eqs. 3,4). Consequence: after RESET, w stays near WCF, so in the 2nd cycle the HRS hopping current is large and a larger voltage drop across Rs makes SET more gradual and V_SET higher (cycle 1: 1.24 V → cycle 2: 2.07 V). |
-| A17 | Rate equations at V = 0 | SET equations for V_sw > 0, RESET equations for V_sw < 0, no change at 0 | Eq. (1) is nonzero even at V=0 (about 5 nm/s at 300 K), which would mean a retention drift on the order of a second. Ignored because the simulation windows here are ≤ 1 ms. |
-| A18 | Variability reference | Implemented with [D] eqs. (8)–(11) | The manual's [5] (Guan EDL 2012) was not available; the user provided [D] in its place. |
-| A19 | DC sweep waveform | Linear triangular ramp | The manual says "stair-like sweep", but no step size is given. The difference is small. |
-| A20 | Units / constants | `Z = 1`, `e = 1.602176634e-19 C`, `k_B = 1.380649e-23 J/K`; `αa`, `αh` [m] × e × E [V/m] → energy [J] | Units as given in Table 3. |
+| A1 | CF 단면적 식 | `w` = CF **지름** (매뉴얼의 "CF width"), `A = π·w²/4` | [D] 식 (6),(7)은 `r`을 "CF 반경"이라 부르면서 `π r²/4`로 써서 앞뒤가 맞지 않습니다. [M] Table 3이 폭 `w`(WCF, w0)를 쓰므로 `/4` 꼴을 지름 기준으로 해석했습니다. (반경 r 기준이면 `π r²`.) R(x=0, w=5 nm) ≈ 5 kΩ. **사용자 확인 완료**: 매뉴얼이 width라 부르고, 고정 상태 모드에서 입력하는 면적이 실제 기하 면적이어야 하기 때문입니다. (식을 글자 그대로 읽으면 R이 4배인 약 20 kΩ.) |
+| A2 | CF와 갭의 연결 | 필라멘트 1개 = CF 구간 (식 7, 길이 `L0 − x`)과 갭 (식 6)의 **직렬 연결**. 전류가 같다는 조건 `V = V_CF + V_gap`에서 `V_gap`을 `brentq`로 풂 | [D] Fig. 2(a)에는 "금속성 경로 + 호핑 경로"만 그려져 있습니다. 식 (7)이 길이 `g0 − g`를 쓰는 것이 직렬 구조를 가리킵니다. `g0`는 `L0`로 봤습니다. |
+| A3 | 호핑 감쇠 길이 `gT` | `gT = 0.25 nm`, **피팅값** (사용자 확인, UI에서 조절 가능) | 식 (6)에 나오지만 Table 3에도 [D]에도 값이 없습니다. HRS 읽기 저항이 MΩ대(Fig. 3과 비슷한 크기)가 되도록 골랐습니다. **`a`와 같은 물리량인지에 대한 검토 의견:** 물리적으로 다른 양이라고 봅니다. `a`는 산소 공공(VO)이 한 번 도약할 때 움직이는 거리로, 이온 이동 속도식 (1),(3),(4)의 길이 전인자입니다. `gT`는 갭을 지나는 호핑·터널링 전류가 지수적으로 줄어드는 특성 길이로, 트랩 준위에서 전자 파동함수가 퍼진 정도(국소화 길이)로 정해지며 이온의 도약 거리와는 무관합니다. 둘이 같은 0.25 nm인 것은 같은 크기 정도를 가정했기 때문일 뿐이라 별도 파라미터로 두었습니다. |
+| A4 | 식 (2)의 측면 성장 단위 `Δr` | `Δr = 0.25 nm` (`a`와 같음) | [D]에 정의가 없습니다. VO 간격과 같은 격자 한 칸으로 가정했습니다. |
+| A5 | 전계 `E` | `E = |V_sw| / L0` (스위칭층 전체의 평균 전계). 식 (3)의 `V`는 `|V_sw|` | [D]가 E를 정의하지 않습니다. `V_gap/x`는 x→0에서 발산하므로 평균 전계를 썼습니다. |
+| A6 | 온도 | `T = T0 + |I_f · V_sw| · Rth`, 필라멘트별 (식 5) | 각 필라멘트 자신의 소비 전력을 씁니다. 필라멘트 사이의 열 간섭은 없습니다. |
+| A7 | 2단계 SET | V>0: 먼저 갭이 닫히고 (식 1), 갭이 닫힌 뒤 측면 성장 (식 2). 전환은 `EPS_X = 2.5 pm (0.01·a)` 폭에서 선형으로 섞음 | [D]는 "two-step process"라고만 하고 전환 조건을 밝히지 않습니다. 섞어 주는 이유는 우변이 불연속이 되는 것을 막기 위해서입니다 (BDF 수렴). |
+| A8 | 상태 범위 | `x ∈ [0, L0]`, `w ∈ [W_MIN = 0.1 nm, WCF]`. 폭 `EPS_X`의 부드러운 벽으로 변화율을 차단 | 잡음(식 8–9)이 딱딱한 클리핑 경계를 밀면 해가 떨리면서 BDF가 실패했습니다 (`Required step size is less than spacing…`). 부드러운 벽으로 해결했고, 결정론적 결과에 주는 영향은 출력 정밀도 이하입니다. |
+| A9 | `Weff`, `crit_x` | **사용하지 않음**. 코드의 Params에는 남기되 **UI에서는 제외** (사용자 결정) | Table 3에 있지만 [D]에 대응하는 식이 없습니다. |
+| A10 | 필라멘트 밀도 (교수님 요청) | `N = max(1, round(n_f · A_cell))`개의 **동일 필라멘트를 병렬**로 두고, 단일 필라멘트의 (x, w) 동역학은 그대로 유지. compliance는 총전류 `N·I_f`로 풂. 기본값 `A_cell = 10 nm × 10 nm` ([D]의 ~10 nm 소자), `n_f = 1e16 m⁻²` → N = 1 | **필라멘트 사이의 경쟁을 무시한 단순화**입니다 (실제로는 지배적인 필라멘트 하나가 전류와 열을 가져갑니다). [M] Table 2도 "one dominant filament"라고 합니다. `RH`, `CP`, `RL`은 셀 단위 성분이라 N에 비례해 바뀌지 않습니다. |
+| A11 | 기생 성분 회로 | 인가 전압 — `RL + Rs` (직렬) — 노드 `V_sw` — [스위칭 소자 ∥ `RH` ∥ `CP`] | [D] Fig. 2(b)와 샘플 덱을 따랐습니다. 덱에는 양쪽에 20 Ω씩 있지만 Table 3은 RL 하나만 정의하므로 한 번만 넣었습니다. **CP:** 펄스 시뮬레이션에서는 상태 변수로 포함 (`include_cp=True`). DC 스윕에서는 시정수 (RL+Rs)·CP ≈ 0.36 ns ≪ 램프 시간이라 무시하고, 지침대로 매 스텝 `V_sw`를 대수적으로 풉니다. |
+| A12 | 식 (8),(9)의 잡음 χ(t) | 단위 RMS 가우시안을 `noise_dt = 0.2 µs`마다 새로 뽑는 계단형(piecewise-constant) 신호 | 샘플 DC 덱의 `.tran` 스텝이 0.2 µs입니다. 산포 크기가 `δ·sqrt(noise_dt·t)`에 비례하므로 `noise_dt`를 어떻게 잡느냐에 따라 산포 크기가 달라집니다. 논문 식대로 SET·RESET 모두에 적용합니다. |
+| A13 | 식 (10),(11)의 에너지 장벽 산포 | 사이클마다 Ea, Ei, Eh ~ N(μ, σ)로 다시 뽑음, σ는 모두 0.02 eV | [D]에 σ 값이 없습니다. V_SET과 저항의 산포가 [D] Fig. 5–6과 비슷한 크기가 되도록 골랐습니다. |
+| A14 | 직렬 저항의 극성 | 인가 전압 ≥ 0 (SET)일 때만 `Rs`, < 0일 때는 `Rs_reset` (기본 0) | 1T1R에서 트랜지스터는 SET 전류만 제한하고 RESET 때는 게이트가 완전히 켜집니다 (샘플 덱: RESET 펄스에는 트랜지스터가 없음). 양방향에 같은 Rs를 두면 RESET이 일어나지 않습니다. |
+| A15 | `Rs` 기본값 (모드별, 사용자 결정) | I-V 스윕 **18 kΩ** (`RS_SWEEP`), 펄스 **10 kΩ** (`RS_PULSE`) | 스윕: 2.5 V에서 전류가 약 100 µA로 포화. 펄스: 2 V에서 약 85 µA로 Fig. 4 (1T1R, ~100 µA)와 비슷한 크기. 둘 다 샘플 덱의 1T1R(Vselect = 1.28 V)을 대신합니다. |
+| A16 | RESET 중 CF 폭 | 변하지 않음. **폭 감소 규칙은 지어내지 않음** (사용자 결정). **다중 사이클 거동은 근사**이며 UI/README에 표시. [4] (EDL 2014) 확보 시 다시 검토 | [D]는 RESET에 대해 갭 식 (3),(4)만 줍니다. 결과적으로 RESET 뒤에도 w가 WCF 근처에 남아, 2번째 사이클에서는 HRS 호핑 전류가 커지고 Rs에 걸리는 전압이 커져 SET이 완만해지고 V_SET이 올라갑니다 (사이클 1: 1.24 V → 사이클 2: 2.07 V). |
+| A17 | V = 0에서의 변화율 | V_sw > 0이면 SET 식, V_sw < 0이면 RESET 식, 0에서는 변화 없음 | 식 (1)은 V=0에서도 0이 아니어서 (300 K에서 약 5 nm/s) 초 단위의 리텐션 드리프트를 뜻합니다. 여기서 다루는 시간 창은 1 ms 이하라 무시했습니다. |
+| A18 | 변동성 근거 자료 | [D] 식 (8)–(11)로 구현 | 매뉴얼의 [5] (Guan EDL 2012)를 구할 수 없어 사용자가 [D]를 대신 제공했습니다. |
+| A19 | DC 스윕 파형 | 선형 삼각파 램프 | 매뉴얼은 "계단형 스윕"이라 하지만 계단 크기가 없습니다. 차이는 작습니다. |
+| A20 | 단위 / 상수 | `Z = 1`, `e = 1.602176634e-19 C`, `k_B = 1.380649e-23 J/K`; `αa`, `αh` [m] × e × E [V/m] → 에너지 [J] | Table 3의 단위를 따랐습니다. |
 
-## Numerical settings (Python reference)
+## 수치 설정 (파이썬 레퍼런스)
 
-- `solve_ivp(method="BDF")`, `rtol = 1e-6`, `atol = 1e-14 m` (x, w), `1e-7 V` (V_sw, CP mode)
-- `max_step`: DC = `t_end / 2000`, pulse = 0.1 ns
-- The integrator restarts at waveform corners and at each χ(t) update
-- Inner solve (V_gap) and outer solve (V_sw, series resistance) both use `brentq`, `xtol = 1e-15`, `rtol = 1e-12`
-- Inside the RHS, exponent arguments are capped at 700 to avoid overflow at far-off Newton trial points (no effect on physical points)
+- `solve_ivp(method="BDF")`, `rtol = 1e-6`, `atol = 1e-14 m` (x, w), `1e-7 V` (V_sw, CP 모드)
+- `max_step`: DC = `t_end / 2000`, 펄스 = 0.1 ns
+- 파형 꺾임점과 χ(t) 갱신 시점마다 적분기를 다시 시작
+- 내부 해 (V_gap)와 외부 해 (V_sw, 직렬 저항) 모두 `brentq`, `xtol = 1e-15`, `rtol = 1e-12`
+- 우변 안에서 지수 인자는 700으로 상한을 둬 뉴턴 시도점이 멀리 튈 때의 오버플로를 막음 (물리적인 점에는 영향 없음)
 
-## Numerical settings (TypeScript core, `web/src/model/`)
+## 수치 설정 (TypeScript 코어, `web/src/model/`)
 
-- Integrator: Rosenbrock ROS2 (Verwer et al. 1999), L-stable, order 2 with an embedded order-1 error estimate. Time is autonomized as a state so ∂f/∂t is included via the Jacobian. Jacobian by forward differences
-- `rtol = 1e-6`, `atol` same as Python. `maxStep`: DC `t_end/2000`, pulse 0.1 ns
-- **Step cap in the switching region:** x and w may change by at most `a/10 = 0.025 nm` per step (the step is rejected and shrunk if exceeded)
-- Restarts at waveform corners and χ(t) updates, same as Python
-- Inner and outer solves: safeguarded Newton (analytic derivative, falls back to bisection when it leaves the bracket), relative tolerance ~1e-13
-- Random numbers: mulberry32 + Box–Muller. Not identical to Python's numpy sequence, so variability results are compared only statistically and for seed reproducibility, not against golden values
-- Golden tolerances (rationale in the test-file comments): algebraic parts relative 1e-8; transient relative 1e-3 within a ±1 output-sample window. A 0.1% change to Ea fails 6 of the 8 golden cases (sensitivity check)
+- 적분기: Rosenbrock ROS2 (Verwer et al. 1999), L-stable, 2차 + 내장 1차 오차 추정. 시간을 상태 변수로 넣어(자율화) ∂f/∂t가 야코비안에 포함됨. 야코비안은 전진 차분
+- `rtol = 1e-6`, `atol`은 파이썬과 같음. `maxStep`: DC `t_end/2000`, 펄스 0.1 ns
+- **스위칭 구간 스텝 상한:** 한 스텝에서 x와 w가 바뀔 수 있는 양은 최대 `a/10 = 0.025 nm` (넘으면 스텝을 버리고 줄임)
+- 파형 꺾임점과 χ(t) 갱신 시점에서 다시 시작하는 것은 파이썬과 같음
+- 내부·외부 해: 안전장치가 있는 뉴턴법 (해석적 도함수, 구간을 벗어나면 이분법으로 전환), 상대 허용오차 ~1e-13
+- 난수: mulberry32 + Box–Muller. 파이썬 numpy 난수열과 같지 않으므로 변동성 결과는 golden 값과 비교하지 않고 통계와 시드 재현성만 확인
+- golden 허용 오차 (근거는 테스트 파일 주석): 대수 부분 상대 1e-8, 과도 응답 상대 1e-3 (±1 출력 샘플 시간 창 안에서). Ea를 0.1% 바꾸면 golden 8개 중 6개가 실패 (민감도 확인)

@@ -1,5 +1,5 @@
-// Web Worker entry: runs model jobs off the UI thread.
-// Message in: { id, job }. Message out: { id, ok: true, out } | { id, ok: false, error }.
+// Web Worker 진입점: 모델 작업을 UI 스레드 밖에서 실행한다.
+// 입력 메시지: { id, job }. 출력 메시지: { id, ok: true, out } | { id, ok: false, error }.
 
 import { runJob, type Job, type JobOutput } from "./jobs";
 

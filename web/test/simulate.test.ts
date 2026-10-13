@@ -1,19 +1,18 @@
-// Transient simulation against python/golden (BDF in Python vs. ROS2 here).
+// 과도 시뮬레이션을 python/golden과 비교 (파이썬은 BDF, 여기서는 ROS2).
 //
-// Tolerances (relative error):
-// - Pointwise: 1e-3 for I, x, w, T, compared within a +-1 output-sample time window.
-//   Why the window: abrupt SET moves I by orders of magnitude within one output interval
-//   (tEnd/2000). The two integrators place internal steps differently, so the same event can
-//   land on adjacent samples; a strict same-sample comparison would then report O(1) errors that
-//   are only a sub-sample time shift. Outside the window the bound is strict.
-//   Why 1e-3: both runs use rtol = 1e-6; observed worst case is ~1.5e-4 (sweep_n4, current).
-//   A 0.1 % change of Ea alone shifts SET timing and currents by > 1e-2, so model errors still fail.
-// - Floors (avoid dividing by ~0): x uses |x| + a (sub-lattice gaps are not resolved physically);
-//   sweep current uses 1e-12 A (far below the 1e-9 A plotted range); pulse current uses
-//   1e-3 * max|I| (0.1 % of full scale, invisible on the linear pulse plot), because at the
-//   pulse end (V = 0) the CP discharge current crosses zero and the series resistance switches
-//   from Rs_reset to Rs (A14); there the residual is ~8 nA and differs by ~1e-10 A between the two.
-// - Scalars: V_SET / V_RESET equal within one output voltage step; I_max within 1e-3.
+// 허용 오차 (상대오차):
+// - 점별: I, x, w, T 모두 1e-3. 단, ±1 출력 샘플의 시간 창 안에서 비교한다.
+//   시간 창을 두는 이유: 급격한 SET에서는 I가 출력 간격 하나(tEnd/2000) 안에서 몇 자릿수 바뀐다.
+//   두 적분기는 내부 스텝 위치가 달라서 같은 사건이 이웃 샘플에 찍힐 수 있고, 같은 샘플끼리만
+//   엄격히 비교하면 샘플 간격보다 작은 시간 어긋남이 O(1) 오차로 보고된다. 시간 창 밖에서는 엄격하다.
+//   1e-3인 이유: 두 실행 모두 rtol = 1e-6이고 관측된 최악값은 ~1.5e-4 (sweep_n4, 전류).
+//   Ea만 0.1% 바꿔도 SET 시점과 전류가 1e-2 넘게 바뀌므로 모델 오류는 여전히 잡힌다.
+// - 하한 (0에 가까운 값으로 나누는 것 방지): x는 |x| + a (격자 한 칸보다 작은 갭은 물리적으로 의미 없음).
+//   스윕 전류는 1e-12 A (그래프 범위 1e-9 A보다 훨씬 아래). 펄스 전류는 1e-3 * max|I|
+//   (전체 크기의 0.1%, 선형 펄스 그래프에서 보이지 않음). 펄스 끝(V = 0)에서 CP 방전 전류가
+//   0을 지나고 직렬 저항이 Rs_reset에서 Rs로 바뀌기 때문이다 (A14). 그 점의 잔류 전류는 ~8 nA이고
+//   두 구현의 차이는 ~1e-10 A.
+// - 스칼라: V_SET / V_RESET은 출력 전압 한 스텝 안에서 일치, I_max는 1e-3 이내.
 
 import { describe, expect, test } from "vitest";
 import { loadCsv } from "./golden";
@@ -37,7 +36,7 @@ function interp(t: ArrayLike<number>, y: ArrayLike<number>, tq: number): number 
 	return y[lo] + s * (y[hi] - y[lo]);
 }
 
-// Max relative error of r (interpolated to golden times) outside the golden [k-1, k+1] envelope
+// golden의 [k-1, k+1] 범위를 벗어난 정도의 최대 상대오차 (r은 golden 시각으로 보간)
 function windowedRelErr(tr: ArrayLike<number>, a: ArrayLike<number>, tg: number[], b: number[], floor: number): { err: number; at: number } {
 	let worst = 0;
 	let at = 0;
@@ -84,7 +83,7 @@ const CASES: Case[] = [
 	{ file: "pulse_reset.csv", wf: pulseWaveform(-2), init: INIT_LRS, opt: pulseOpt, p: DEFAULT, pulse: true },
 ];
 
-describe("golden: transient", () => {
+describe("golden: 과도 응답", () => {
 	for (const c of CASES) {
 		test(c.file, () => {
 			const g = loadCsv(c.file);
@@ -100,12 +99,12 @@ describe("golden: transient", () => {
 			];
 			for (const [name, a, b, floor] of checks) {
 				const e = windowedRelErr(r.t, a, g.t_s, b, floor);
-				expect(e.err, `${name} at t = ${e.at}`).toBeLessThan(RTOL);
+				expect(e.err, `${name}, t = ${e.at} s`).toBeLessThan(RTOL);
 			}
 			const iMax = Math.max(...Array.from(r.i, Math.abs));
 			expect(Math.abs(iMax - iMaxG) / iMaxG).toBeLessThan(RTOL);
 			if (!c.pulse) {
-				const dv = 2.5 / ((g.t_s.length - 1) / 4);	// one output step in voltage [V]
+				const dv = 2.5 / ((g.t_s.length - 1) / 4);	// 출력 한 스텝에 해당하는 전압 [V]
 				const sTs = switchingVoltage(r, c.p);
 				const gRes = { t: g.t_s, vApp: g.v_app_V, i: g.i_A, x: g.x_m } as unknown as SimResult;
 				const sPy = switchingVoltage(gRes, c.p);
@@ -116,8 +115,8 @@ describe("golden: transient", () => {
 	}
 });
 
-describe("variability", () => {
-	test("same seed gives identical cycles; different seeds differ", () => {
+describe("변동성", () => {
+	test("같은 시드면 같은 사이클, 다른 시드면 다른 결과", () => {
 		const wf = sweepWaveform(2.5, -2.5, 10e-6);
 		const run = (seed: number): SimResult => {
 			const rng = normalRng(seed);
@@ -135,7 +134,7 @@ describe("variability", () => {
 		}
 	});
 
-	test("normalRng has ~zero mean and unit variance", () => {
+	test("normalRng의 평균은 ~0, 분산은 1", () => {
 		const rng = normalRng(42);
 		const n = 200_000;
 		let s = 0;
