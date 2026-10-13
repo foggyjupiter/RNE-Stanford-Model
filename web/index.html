@@ -4,13 +4,13 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>RRAM 시뮬레이터</title>
-	<meta name="description" content="금속산화물 bipolar RRAM 전도성 필라멘트 모델 시뮬레이터">
+	<meta name="description" content="금속산화물 unipolar RRAM 전도성 필라멘트 모델 시뮬레이터">
 </head>
 <body>
 	<header class="top">
 		<div class="brand">
 			<h1>RRAM 시뮬레이터</h1>
-			<p>금속산화물 bipolar RRAM · 전도성 필라멘트 모델</p>
+			<p>금속산화물 unipolar RRAM · 2차원 열 용해 필라멘트 모델</p>
 		</div>
 		<nav id="modes" class="modes" aria-label="모드"></nav>
 		<button id="theme" class="btn theme-btn" type="button">시스템</button>
@@ -44,13 +44,15 @@
 	</div>
 
 	<footer class="foot">
-		<p class="foot-lead">원 모델: PKU-Stanford RRAM SPICE Model v2.0Beta (Peking University &amp; Stanford University, 2015). 이 앱은 공개 논문의 식을 독립적으로 구현한 것이며 원 모델의 코드(.va)를 사용하지 않았습니다. 가정과 근거는 저장소의 ASSUMPTIONS.md에 있습니다.</p>
+		<p class="foot-lead">원 모델: PKU-Stanford RRAM SPICE Model v2.0Beta (Peking University &amp; Stanford University, 2015). 이 앱은 unipolar 동작을 위해 RESET을 Russo et al. [6]의 2차원 열 용해 모델로, SET을 [2]의 측면 성장식으로 독립 구현한 것이며 원 모델의 코드(.va)를 사용하지 않았습니다. 가정과 근거는 저장소의 ASSUMPTIONS.md에 있습니다.</p>
 		<ol class="refs">
 			<li>H.-S. P. Wong et al., “Metal–Oxide RRAM,” <i>Proc. IEEE</i>, vol. 100, no. 6, pp. 1951–1970, 2012.</li>
 			<li>H. Li et al., “Variation-aware, reliability-emphasized design and optimization of RRAM using SPICE model,” <i>DATE</i>, pp. 1426–1430, 2015.</li>
 			<li>Z. Jiang et al., “Verilog-A compact model for oxide-based RRAM,” <i>SISPAD</i>, pp. 41–44, 2014.</li>
 			<li>H. Li et al., “A SPICE model of resistive random access memory for large-scale memory array simulation,” <i>IEEE EDL</i>, vol. 35, no. 2, pp. 211–213, 2014.</li>
 			<li>X. Guan, S. Yu, and H.-S. P. Wong, “A SPICE compact model of metal oxide resistive switching memory with variations,” <i>IEEE EDL</i>, pp. 1405–1407, 2012.</li>
+			<li>U. Russo, D. Ielmini, C. Cagli, and A. L. Lacaita, “Self-accelerated thermal dissolution model for reset programming in unipolar resistive-switching memory (RRAM) devices,” <i>IEEE TED</i>, vol. 56, no. 2, pp. 193–200, 2009. DOI 10.1109/TED.2008.2010584</li>
+			<li>U. Russo, D. Ielmini, C. Cagli, and A. L. Lacaita, “Filament conduction and reset mechanism in NiO-based resistive-switching memory (RRAM) devices,” <i>IEEE TED</i>, vol. 56, no. 2, pp. 186–192, 2009. DOI 10.1109/TED.2008.2010583</li>
 		</ol>
 	</footer>
 

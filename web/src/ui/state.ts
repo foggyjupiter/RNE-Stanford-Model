@@ -1,6 +1,6 @@
 // 앱 상태와 모드별 기본값.
 
-import { DEFAULT, DEFAULT_VARIABILITY, RS_PULSE, RS_SWEEP, type Params, type Variability } from "../model";
+import { DEFAULT, DEFAULT_VARIABILITY, RS_SET, type Params, type Variability } from "../model";
 
 export type Mode = "sweep" | "pulse" | "sequence" | "fixed";
 
@@ -11,40 +11,39 @@ export const MODE_LABELS: Record<Mode, string> = {
 	fixed: "고정 상태",
 };
 
+// unipolar 스윕: 0 → +V_RESET → 0 (compliance 없음) → +V_SET → 0 (R_s 직렬). 포밍된 LRS에서 시작
 export interface SweepSettings {
+	vReset: number;	// [V]
 	vSet: number;	// [V]
-	vReset: number;	// [V], 음수
 	tRamp: number;	// 구간당 램프 시간 [s]
 	rs: number;	// SET compliance 저항 [ohm]
 	cycles: number;
 }
 
 export interface PulseSettings {
-	polarity: "set" | "reset";
-	amplitude: number;	// 진폭 크기 [V], 부호는 polarity가 정함
-	width: number;	// 평탄부 폭 [s]
-	tEdge: number;	// 상승/하강 시간 [s]
-	rs: number;	// SET compliance 저항 [ohm]
+	op: "set" | "reset";
+	amplitude: number;	// [V], 양의 극성
+	width: number;	// 평탄부 [s]
+	tEdge: number;	// [s]
+	rs: number;	// [ohm]
 }
 
-// 쓰기-읽기 기본 펄스: 파라미터 기본값에서 4사이클 반복해 확인한 조건.
-// SET +2 V/80 ns (Fig. 4와 같음) → 약 15 kΩ, RESET −2.5 V/1 µs → 약 1.1 MΩ (창 ~70배, 최고 온도 566 K).
-// RESET −2 V/80 ns는 34 kΩ까지만 올라가 창이 2.4배뿐이라 기본값으로 쓰지 않는다 (A21).
+// 쓰기-읽기 기본 펄스 (A21): RESET 3 V / 10 µs → 약 19 kΩ, SET 2.5 V / 1 µs (R_s 3 kΩ) → 약 1 kΩ 이하.
+// 1 µs RESET은 3 V에서도 3.6 kΩ까지만 올라가 창이 작다
 export interface SequenceSettings {
+	resetV: number;	// [V]
+	resetWidth: number;	// [s]
 	setV: number;	// [V]
 	setWidth: number;	// [s]
-	resetV: number;	// [V], 음수
-	resetWidth: number;	// [s]
-	readV: number;	// [V]
-	readWidth: number;	// [s]
+	vRead: number;	// [V]
 	tEdge: number;	// [s]
 	rs: number;	// [ohm]
 	cycles: number;
 }
 
 export interface FixedSettings {
-	x: number;	// 갭 [m]
-	aCf: number;	// CF 면적 [m^2]
+	rNeck: number;	// 잘록 구간 반경 [m]
+	neckLen: number;	// 잘록 구간 길이 [m]
 	vMax: number;	// 스윕 범위 ±vMax [V]
 }
 
@@ -60,24 +59,23 @@ export interface AppState {
 	fixed: FixedSettings;
 }
 
-export const DEFAULT_SWEEP: SweepSettings = { vSet: 2.5, vReset: -2.5, tRamp: 100e-6, rs: RS_SWEEP, cycles: 1 };
-export const DEFAULT_PULSE: PulseSettings = { polarity: "set", amplitude: 2, width: 80e-9, tEdge: 10e-9, rs: RS_PULSE };
+export const DEFAULT_SWEEP: SweepSettings = { vReset: 1.6, vSet: 4.0, tRamp: 0.25, rs: RS_SET, cycles: 1 };
+export const DEFAULT_PULSE: PulseSettings = { op: "reset", amplitude: 3.0, width: 10e-6, tEdge: 10e-9, rs: RS_SET };
 export const DEFAULT_SEQUENCE: SequenceSettings = {
-	setV: 2,
-	setWidth: 80e-9,
-	resetV: -2.5,
-	resetWidth: 1e-6,
-	readV: 0.2,
-	readWidth: 50e-9,
+	resetV: 3.0,
+	resetWidth: 10e-6,
+	setV: 2.5,
+	setWidth: 1e-6,
+	vRead: 0.1,
 	tEdge: 10e-9,
-	rs: RS_PULSE,
-	cycles: 3,
+	rs: RS_SET,
+	cycles: 2,
 };
-export const DEFAULT_FIXED: FixedSettings = { x: 1e-9, aCf: 10e-18, vMax: 0.5 };
+export const DEFAULT_FIXED: FixedSettings = { rNeck: 4e-9, neckLen: 8e-9, vMax: 0.5 };
 
-// 변동성을 켤 때 사이클 수가 1이면 이 값으로 올린다. 스윕 1사이클 ≈ 0.25 s라 낮게 잡음
-export const VARIABILITY_CYCLES = 5;
-export const MAX_CYCLES = 50;
+// 변동성을 켤 때 사이클 수가 1이면 이 값으로 올린다. 2차원 계산이라 사이클당 수 초가 걸려 낮게 잡음
+export const VARIABILITY_CYCLES = 3;
+export const MAX_CYCLES = 20;
 
 export function initialState(): AppState {
 	return {
@@ -91,13 +89,4 @@ export function initialState(): AppState {
 		sequence: { ...DEFAULT_SEQUENCE },
 		fixed: { ...DEFAULT_FIXED },
 	};
-}
-
-// Table 3 초기 상태를 현재 파라미터로: HRS = (x0 = L0, w0 = 0.5 nm), LRS = (x0 = 0, w0 = WCF)
-export function initHrs(p: Params): [number, number] {
-	return [p.L0, Math.min(0.5e-9, p.WCF)];
-}
-
-export function initLrs(p: Params): [number, number] {
-	return [0, p.WCF];
 }

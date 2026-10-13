@@ -163,33 +163,38 @@ export function timeChart(div: HTMLElement, t: ArrayLike<number>, y: ArrayLike<n
 	draw(div, data, layout(th, { title: `시간 (${o.tLabel})` }, { title: o.yTitle, log: o.yLog, range: o.yLog ? logRange(raw) : undefined }, { hovermode: "x" }));
 }
 
-// ---------------------------------------------------------------- 상태 변수 x, w (nm)
-export function stateChart(div: HTMLElement, t: ArrayLike<number>, x: ArrayLike<number>, w: ArrayLike<number>, tScale: number, tLabel: string): void {
+// ---------------------------------------------------------------- CF 형상과 온도 분포 (cf. [R] Fig. 2)
+// 단일 색상(파랑) 순차 색 척도: 밝음 = 차가움, 어두움 = 뜨거움
+const SEQ_BLUE: [number, string][] = [[0, "#cde2fb"], [0.25, "#86b6ef"], [0.5, "#3987e5"], [0.75, "#1c5cab"], [1, "#0d366b"]];
+
+export function profileMapChart(div: HTMLElement, rFaces: ArrayLike<number>, zFaces: ArrayLike<number>, T: ArrayLike<number>, rb: ArrayLike<number>, zc: ArrayLike<number>): void {
 	const th = theme();
-	const tt = Array.from(t, (z) => z * tScale);
-	const xs = Array.from(x, (z) => z * 1e9);
-	const ws = Array.from(w, (z) => z * 1e9);
-	const line = (name: string, ys: number[], color: string): Plotly.Data => ({
-		type: "scattergl",
+	const nr = rFaces.length - 1;
+	const nz = zFaces.length - 1;
+	const rcs: number[] = [];
+	for (let i = 0; i < nr; i++) rcs.push(0.5 * (rFaces[i] + rFaces[i + 1]) * 1e9);
+	const zcs = Array.from(zc, (z) => z * 1e9);
+	const z2: number[][] = [];
+	for (let j = 0; j < nz; j++) z2.push(Array.from({ length: nr }, (_, i) => T[j * nr + i]));
+	const heat: Plotly.Data = {
+		type: "heatmap",
+		x: rcs,
+		y: zcs,
+		z: z2,
+		colorscale: SEQ_BLUE as unknown as Plotly.ColorScale,
+		colorbar: { title: "T (K)", thickness: 10, outlinewidth: 0, tickfont: { color: th.muted, size: 11 } } as Partial<Plotly.ColorBar>,
+		hovertemplate: "r = %{x:.0f} nm, z = %{y:.0f} nm<br>T = %{z:.0f} K<extra></extra>",
+	};
+	const edge: Plotly.Data = {
+		type: "scatter",
 		mode: "lines",
-		name,
-		x: tt,
-		y: ys,
-		line: { color, width: 2 },
-		hovertemplate: `${name} = %{y:.3f} nm<extra></extra>`,
-	});
-	const last = tt.length - 1;
-	// 직접 라벨: 선 오른쪽 끝에 이름 (색만으로 구분하지 않도록)
-	const annotations: Partial<Plotly.Annotations>[] = [
-		{ x: tt[last], y: xs[last], text: "x", showarrow: false, xanchor: "left", xshift: 6, font: { color: th.text2, size: 12 } },
-		{ x: tt[last], y: ws[last], text: "w", showarrow: false, xanchor: "left", xshift: 6, font: { color: th.text2, size: 12 } },
-	];
-	draw(div, [line("갭 x", xs, th.s1), line("CF 폭 w", ws, th.s2)], layout(th, { title: `시간 (${tLabel})` }, { title: "길이 (nm)", range: [-0.2, Math.max(...xs, ...ws) * 1.08 + 0.1] }, {
-		hovermode: "x unified",
-		showlegend: true,
-		annotations,
-		margin: { l: 56, r: 28, t: 28, b: 44 },
-	}));
+		name: "CF 경계",
+		x: Array.from(rb, (r) => r * 1e9),
+		y: zcs,
+		line: { color: th.s2, width: 2.5 },
+		hovertemplate: "CF 반경 %{x:.1f} nm<extra></extra>",
+	};
+	draw(div, [heat, edge], layout(th, { title: "반경 r (nm)" }, { title: "높이 z (nm)" }, { hovermode: "closest" }));
 }
 
 // ---------------------------------------------------------------- LRS/HRS 분포 (log10 R 구간)

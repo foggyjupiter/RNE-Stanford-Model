@@ -1,21 +1,21 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_VARIABILITY, cfWidthFromArea, filamentCount, readResistance, type Job, type JobOutput, type Params, type SimResult, type TransientOutput } from "./model";
+import { DEFAULT, DEFAULT_VARIABILITY, filamentCount, type Job, type JobOutput, type FixedOutput, type Params, type SimResult, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
-import { downloadPng, histogramChart, ivChart, purge, readChart, stateChart, timeChart } from "./ui/charts";
+import { downloadPng, histogramChart, ivChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
 import { downloadCsv, resultCsv, summaryCsv } from "./ui/export";
 import { meanStd, median, siFormat, timeUnit } from "./ui/format";
-import { NOISE_FIELDS, PARAM_GROUPS, VAR_FIELDS, type ParamMeta } from "./ui/meta";
-import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initHrs, initLrs, initialState, type Mode } from "./ui/state";
+import { PARAM_GROUPS, VAR_FIELDS, type ParamMeta } from "./ui/meta";
+import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Mode } from "./ui/state";
 
 const state = initialState();
 const client = new ModelClient();
 let lastOut: JobOutput | null = null;
 let lastMode: Mode = state.mode;
 let timer: number | undefined;
-const DEBOUNCE_MS = 200;	// 슬라이더 드래그 중 재계산 간격 [ms]
+const DEBOUNCE_MS = 400;	// 입력 후 재계산까지 기다리는 시간 [ms]. 2차원 계산이 수 초 걸려 길게 잡음
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -62,14 +62,13 @@ function setupTheme(): void {
 
 // ---------------------------------------------------------------- 모드 선택
 function buildModes(): void {
-	const nav = $("modes");
 	const seg = makeSegmented<Mode>("시뮬레이션 모드", (Object.keys(MODE_LABELS) as Mode[]).map((m) => [m, MODE_LABELS[m]]), () => state.mode, (m) => {
 		state.mode = m;
 		buildWave();
 		buildVariability();
 		schedule(0);
 	});
-	nav.replaceChildren(seg.el);
+	$("modes").replaceChildren(seg.el);
 }
 
 // ---------------------------------------------------------------- 파형 설정
@@ -96,11 +95,17 @@ function numField(id: string, symbol: string, label: string, unit: string, min: 
 }
 
 function cyclesField(get: () => number, set: (v: number) => void): Field {
-	return numField("cycles", "N<sub>cyc</sub>", "사이클 수", "", 1, MAX_CYCLES, 1, get, (v) => set(Math.max(1, Math.min(MAX_CYCLES, Math.round(v)))), { integer: true, note: "2회째부터 근사 (A16)" });
+	return numField("cycles", "N<sub>cyc</sub>", "사이클 수", "", 1, MAX_CYCLES, 1, get, (v) => set(Math.max(1, Math.min(MAX_CYCLES, Math.round(v)))), { integer: true, note: "사이클당 수 초" });
+}
+
+function waveHint(): string {
+	if (state.mode === "sweep") return "unipolar: 0 → +V_RESET → 0 (제한 없음) → +V_SET → 0 (R_s 직렬). 포밍된 LRS에서 시작";
+	if (state.mode === "pulse") return state.pulse.op === "reset" ? "RESET 펄스: 포밍된 LRS에서 시작, 제한 없음, C_P 포함" : "SET 펄스: RESET 스윕 뒤 HRS에서 시작, R_s 직렬, C_P 포함";
+	if (state.mode === "sequence") return "사이클마다 RESET 펄스 → 읽기 → SET 펄스 → 읽기. 같은 극성 (A21)";
+	return "가운데 잘록 구간의 반경과 길이를 정하고 스위칭 없이 읽기 I-V를 본다";
 }
 
 function buildWave(): void {
-	const box = $("wave");
 	const s = section("파형", waveHint());
 	const add = (f: Field): void => {
 		waveFields.push(f);
@@ -109,42 +114,47 @@ function buildWave(): void {
 	waveFields = [];
 	if (state.mode === "sweep") {
 		const w = state.sweep;
-		add(numField("vSet", "V<sub>SET,max</sub>", "양의 최대 전압", "V", 0.5, 3.5, 1, () => w.vSet, (v) => (w.vSet = v)));
-		add(numField("vReset", "V<sub>RESET,max</sub>", "음의 최대 전압", "V", -3.5, -0.5, 1, () => w.vReset, (v) => (w.vReset = v)));
-		add(numField("tRamp", "t<sub>ramp</sub>", "구간당 램프 시간", "µs", 1, 10000, 1e-6, () => w.tRamp, (v) => (w.tRamp = v), { log: true }));
-		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET 방향은 0 Ω)", "kΩ", 1, 100, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		add(numField("vReset", "V<sub>RESET,max</sub>", "RESET 구간 최대 전압", "V", 0.5, 3, 1, () => w.vReset, (v) => (w.vReset = v)));
+		add(numField("vSet", "V<sub>SET,max</sub>", "SET 구간 최대 전압", "V", 0.5, 6, 1, () => w.vSet, (v) => (w.vSet = v)));
+		add(numField("tRamp", "t<sub>ramp</sub>", "구간당 램프 시간", "ms", 1, 10000, 1e-3, () => w.tRamp, (v) => (w.tRamp = v), { log: true, note: "[R]: 4 V/s" }));
+		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET 구간은 0 Ω)", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
 	} else if (state.mode === "pulse") {
 		const w = state.pulse;
-		const pol = makeSegmented<"set" | "reset">("펄스 극성", [["set", "SET (+)"], ["reset", "RESET (−)"]], () => w.polarity, (v) => {
-			w.polarity = v;
-			const hint = s.querySelector(".panel-hint");
-			if (hint) hint.textContent = waveHint();
+		const op = makeSegmented<"reset" | "set">("펄스 동작", [["reset", "RESET"], ["set", "SET"]], () => w.op, (v) => {
+			w.op = v;
+			if (v === "set" && w.amplitude === DEFAULT_PULSE.amplitude && w.width === DEFAULT_PULSE.width) {
+				w.amplitude = DEFAULT_SEQUENCE.setV;
+				w.width = DEFAULT_SEQUENCE.setWidth;
+			} else if (v === "reset" && w.amplitude === DEFAULT_SEQUENCE.setV && w.width === DEFAULT_SEQUENCE.setWidth) {
+				w.amplitude = DEFAULT_PULSE.amplitude;
+				w.width = DEFAULT_PULSE.width;
+			}
+			buildWave();
 			schedule(0);
 		});
-		pol.el.classList.add("seg-block");
-		add(pol);
-		add(numField("amp", "|V<sub>p</sub>|", "펄스 진폭", "V", 0.5, 3.5, 1, () => w.amplitude, (v) => (w.amplitude = v)));
-		add(numField("width", "t<sub>w</sub>", "펄스 폭 (평탄부)", "ns", 1, 10000, 1e-9, () => w.width, (v) => (w.width = v), { log: true }));
-		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 50, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
-		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET 방향은 0 Ω)", "kΩ", 1, 100, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		op.el.classList.add("seg-block");
+		add(op);
+		add(numField("amp", "V<sub>p</sub>", "펄스 진폭 (양의 극성)", "V", 0.5, 5, 1, () => w.amplitude, (v) => (w.amplitude = v)));
+		add(numField("width", "t<sub>w</sub>", "펄스 폭 (평탄부)", "µs", 0.01, 100, 1e-6, () => w.width, (v) => (w.width = v), { log: true }));
+		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 100, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
+		if (w.op === "set") add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
 	} else if (state.mode === "sequence") {
 		const w = state.sequence;
-		add(numField("setV", "V<sub>SET</sub>", "SET 펄스 진폭", "V", 0.5, 3.5, 1, () => w.setV, (v) => (w.setV = v)));
-		add(numField("setW", "t<sub>SET</sub>", "SET 펄스 폭", "ns", 1, 10000, 1e-9, () => w.setWidth, (v) => (w.setWidth = v), { log: true }));
-		add(numField("resetV", "V<sub>RESET</sub>", "RESET 펄스 진폭", "V", -3.5, -0.5, 1, () => w.resetV, (v) => (w.resetV = v)));
-		add(numField("resetW", "t<sub>RESET</sub>", "RESET 펄스 폭", "ns", 1, 10000, 1e-9, () => w.resetWidth, (v) => (w.resetWidth = v), { log: true }));
-		add(numField("readV", "V<sub>read</sub>", "읽기 전압", "V", 0.05, 0.5, 1, () => w.readV, (v) => (w.readV = v)));
-		add(numField("readW", "t<sub>read</sub>", "읽기 펄스 폭", "ns", 10, 1000, 1e-9, () => w.readWidth, (v) => (w.readWidth = v), { log: true }));
-		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 50, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
-		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET·읽기는 0 Ω)", "kΩ", 1, 100, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		add(numField("resetV", "V<sub>RESET</sub>", "RESET 펄스 진폭", "V", 0.5, 5, 1, () => w.resetV, (v) => (w.resetV = v)));
+		add(numField("resetW", "t<sub>RESET</sub>", "RESET 펄스 폭", "µs", 0.01, 100, 1e-6, () => w.resetWidth, (v) => (w.resetWidth = v), { log: true }));
+		add(numField("setV", "V<sub>SET</sub>", "SET 펄스 진폭", "V", 0.5, 5, 1, () => w.setV, (v) => (w.setV = v)));
+		add(numField("setW", "t<sub>SET</sub>", "SET 펄스 폭", "µs", 0.01, 100, 1e-6, () => w.setWidth, (v) => (w.setWidth = v), { log: true }));
+		add(numField("readV", "V<sub>read</sub>", "읽기 전압", "V", 0.02, 0.3, 1, () => w.vRead, (v) => (w.vRead = v)));
+		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 100, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
+		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET은 0 Ω)", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
 	} else {
 		const w = state.fixed;
-		add(numField("fx", "x", "갭 크기", "nm", 0, state.params.L0 * 1e9, 1e-9, () => w.x, (v) => (w.x = Math.max(0, v))));
-		const aMax = Math.PI * state.params.WCF ** 2 / 4;	// w = WCF일 때의 면적 [m^2]
-		add(numField("fa", "A<sub>CF</sub>", "필라멘트 면적 (π w²/4, A1)", "nm²", 0.1, aMax * 1e18, 1e-18, () => w.aCf, (v) => (w.aCf = Math.max(1e-21, v))));
-		add(numField("fv", "V<sub>max</sub>", "스윕 범위 ±", "V", 0.1, 1.5, 1, () => w.vMax, (v) => (w.vMax = v)));
+		const p = state.params;
+		add(numField("fr", "r<sub>neck</sub>", "잘록 구간 반경", "nm", 0.5, p.phi0 / 2 * 1e9, 1e-9, () => w.rNeck, (v) => (w.rNeck = Math.max(0, v))));
+		add(numField("fl", "L<sub>neck</sub>", "잘록 구간 길이", "nm", 0, p.L0 * 1e9, 1e-9, () => w.neckLen, (v) => (w.neckLen = Math.max(0, v))));
+		add(numField("fv", "V<sub>max</sub>", "스윕 범위 ±", "V", 0.05, 1, 1, () => w.vMax, (v) => (w.vMax = v)));
 	}
 	const reset = el("button", "link-btn", "파형 기본값");
 	reset.type = "button";
@@ -157,14 +167,7 @@ function buildWave(): void {
 		schedule(0);
 	});
 	s.querySelector(".panel-head")!.append(reset);
-	box.replaceChildren(s);
-}
-
-function waveHint(): string {
-	if (state.mode === "sweep") return "0 → +V → 0 → −V → 0 삼각파. 초기 상태 HRS (x₀ = L₀, w₀ = 0.5 nm)";
-	if (state.mode === "pulse") return state.pulse.polarity === "set" ? "사다리꼴 펄스. 초기 상태 HRS (x₀ = L₀, w₀ = 0.5 nm), C_P 포함" : "사다리꼴 펄스. 초기 상태 LRS (x₀ = 0, w₀ = W_CF), C_P 포함";
-	if (state.mode === "sequence") return "사이클마다 SET → 읽기 → RESET → 읽기. 기본값은 창 ~70배가 나오는 조건 (A21)";
-	return "갭과 필라멘트 면적을 직접 정하고 스위칭 없이 읽기 I-V를 본다";
+	$("wave").replaceChildren(s);
 }
 
 // ---------------------------------------------------------------- 변동성
@@ -177,7 +180,8 @@ function buildVariability(): void {
 		box.replaceChildren();
 		return;
 	}
-	const s = section("변동성", state.mode === "sweep" ? "사이클마다 Ea·Ei·Eh 재추출 (식 10–11) + 갭·폭 잡음 χ(t) (식 8–9)" : "사이클마다 Ea·Ei·Eh 재추출 (식 10–11). 펄스에서 χ(t)는 생략 (A23)");
+	const s = section("변동성", "사이클마다 SET 장벽 E_a, RESET 장벽 E_d를 다시 뽑는다 ([D] 식 10–11, A13)");
+	const body = el("div", "panel-body");
 	const sw = makeSwitch("변동성 켜기", () => state.variabilityOn, (on) => {
 		state.variabilityOn = on;
 		const cyc = state.mode === "sweep" ? state.sweep : state.sequence;
@@ -187,7 +191,6 @@ function buildVariability(): void {
 		schedule(0);
 	});
 	s.append(sw.el);
-	const body = el("div", "panel-body");
 	body.hidden = !state.variabilityOn;
 	for (const m of VAR_FIELDS) {
 		const f = makeField({
@@ -201,13 +204,6 @@ function buildVariability(): void {
 		varFields.push(f);
 		body.append(f.el);
 	}
-	if (state.mode === "sweep") {
-		for (const m of NOISE_FIELDS) {
-			const f = paramField(m);
-			varFields.push(f);
-			body.append(f.el);
-		}
-	}
 	const row = el("div", "btn-row");
 	const reroll = el("button", "btn", "다시 뽑기");
 	reroll.type = "button";
@@ -219,8 +215,6 @@ function buildVariability(): void {
 	reset.type = "button";
 	reset.addEventListener("click", () => {
 		state.variability = { ...DEFAULT_VARIABILITY };
-		state.params.deltaGap = DEFAULT.deltaGap;
-		state.params.deltaCF = DEFAULT.deltaCF;
 		for (const f of varFields) f.refresh();
 		schedule(0);
 	});
@@ -232,26 +226,27 @@ function buildVariability(): void {
 
 // ---------------------------------------------------------------- 파라미터 패널
 const paramFields: Field[] = [];
+let countEl: HTMLElement | null = null;
+
+function updateCount(): void {
+	if (countEl) countEl.innerHTML = `N = <strong>${filamentCount(state.params).toLocaleString("ko-KR")}</strong>개`;
+}
 
 function paramField(m: ParamMeta): Field {
 	return makeField({
 		id: m.key, symbol: m.symbol, label: m.label, unit: m.unit, min: m.min, max: m.max, log: m.log, fixed: m.fixed, note: m.note,
 		get: () => state.params[m.key] / m.scale,
 		set: (v) => {
-			state.params[m.key] = v * m.scale;
+			let val = v * m.scale;
+			// 계산 영역은 CF보다 커야 한다
+			if (m.key === "Rdom") val = Math.max(val, 0.55 * state.params.phi0);
+			if (m.key === "phi0") val = Math.min(val, 1.8 * state.params.Rdom);
+			state.params = { ...state.params, [m.key]: val };
 			if (m.key === "nF" || m.key === "aCell") updateCount();
-			if (m.key === "L0" || m.key === "WCF") {
-				if (state.mode === "fixed") buildWave();
-			}
+			if ((m.key === "L0" || m.key === "phi0") && state.mode === "fixed") buildWave();
 			schedule();
 		},
 	});
-}
-
-let countEl: HTMLElement | null = null;
-
-function updateCount(): void {
-	if (countEl) countEl.innerHTML = `N = <strong>${filamentCount(state.params).toLocaleString("ko-KR")}</strong>개`;
 }
 
 function buildParams(): void {
@@ -263,7 +258,6 @@ function buildParams(): void {
 	resetAll.addEventListener("click", () => {
 		state.params = { ...DEFAULT };
 		for (const f of paramFields) f.refresh();
-		for (const f of varFields) f.refresh();
 		updateCount();
 		if (state.mode === "fixed") buildWave();
 		schedule(0);
@@ -309,52 +303,31 @@ function currentJob(): Job {
 	const variability = state.variabilityOn ? { ...state.variability } : undefined;
 	if (state.mode === "sweep") {
 		const w = state.sweep;
-		const [x0, w0] = initHrs(p);
-		const tEnd = 4 * w.tRamp;
-		return {
-			kind: "transient",
-			wave: { kind: "sweep", vSet: w.vSet, vReset: w.vReset, tRamp: w.tRamp },
-			x0, w0, params: p,
-			// 잡음 유지 시간: 0.2 µs (A12), 단 긴 램프에서는 전체/2000으로 늘려 계산량을 묶는다
-			opt: { rs: w.rs, rsReset: 0, noiseDt: variability ? Math.max(0.2e-6, tEnd / 2000) : undefined },
-			cycles: w.cycles,
-			variability,
-			seed: state.seed,
-		};
+		return { kind: "sweep", vReset: w.vReset, vSet: w.vSet, tRamp: w.tRamp, rs: w.rs, params: p, cycles: w.cycles, variability, seed: state.seed };
 	}
 	if (state.mode === "pulse") {
 		const w = state.pulse;
-		const [x0, w0] = w.polarity === "set" ? initHrs(p) : initLrs(p);
-		const v = w.polarity === "set" ? w.amplitude : -w.amplitude;
-		const tEnd = w.width + 2 * w.tEdge;
-		return {
-			kind: "transient",
-			wave: { kind: "pulse", vPulse: v, tEdge: w.tEdge, tWidth: w.width, tTotal: tEnd },
-			x0, w0, params: p,
-			opt: { rs: w.rs, rsReset: 0, includeCp: true, maxStep: Math.max(0.1e-9, tEnd / 2000) },
-			cycles: 1,
-		};
+		return { kind: "pulse", op: w.op, v: w.amplitude, width: w.width, tEdge: w.tEdge, rs: w.rs, params: p };
 	}
 	if (state.mode === "sequence") {
 		const w = state.sequence;
-		const [x0, w0] = initHrs(p);
 		return {
 			kind: "sequence",
-			set: { v: w.setV, width: w.setWidth },
 			reset: { v: w.resetV, width: w.resetWidth },
-			read: { v: w.readV, width: w.readWidth },
+			set: { v: w.setV, width: w.setWidth },
+			vRead: w.vRead,
 			tEdge: w.tEdge,
 			rs: w.rs,
-			x0, w0, params: p,
+			params: p,
 			cycles: w.cycles,
 			variability,
 			seed: state.seed,
 		};
 	}
 	const f = state.fixed;
-	const n = 201;
+	const n = 41;
 	const v = Array.from({ length: n }, (_, k) => -f.vMax + 2 * f.vMax * k / (n - 1));
-	return { kind: "fixed", v, x: Math.min(f.x, p.L0), aCf: f.aCf, params: p };
+	return { kind: "fixed", v, rNeck: Math.min(f.rNeck, p.phi0 / 2), neckLen: Math.min(f.neckLen, p.L0), params: p };
 }
 
 // ---------------------------------------------------------------- 계산 예약 / 진행 표시
@@ -364,14 +337,13 @@ function schedule(delay = DEBOUNCE_MS): void {
 }
 
 function setStatus(text: string, busy: boolean, progress?: number): void {
-	const st = $("status");
-	st.classList.toggle("busy", busy);
+	$("status").classList.toggle("busy", busy);
 	$("status-text").textContent = text;
 	const bar = $("progress");
 	bar.hidden = progress === undefined;
 	if (progress !== undefined) {
 		bar.setAttribute("aria-valuenow", String(Math.round(progress * 100)));
-		($("progress-fill") as HTMLElement).style.width = `${(progress * 100).toFixed(1)}%`;
+		$("progress-fill").style.width = `${(progress * 100).toFixed(1)}%`;
 	}
 	$("cancel").hidden = !busy;
 }
@@ -379,12 +351,13 @@ function setStatus(text: string, busy: boolean, progress?: number): void {
 async function compute(): Promise<void> {
 	const job = currentJob();
 	const mode = state.mode;
-	const cycles = job.kind === "fixed" ? 1 : job.cycles;
+	const cycles = job.kind === "sweep" || job.kind === "sequence" ? job.cycles : 1;
 	const t0 = performance.now();
-	setStatus(cycles > 1 ? `계산 중… 0 / ${cycles} 사이클` : "계산 중…", true, cycles > 1 ? 0 : undefined);
+	setStatus("계산 중…", true, 0);
 	try {
 		const out = await client.run(job, (done, total) => {
-			setStatus(`계산 중… ${done} / ${total} 사이클`, true, done / total);
+			const label = cycles > 1 ? ` · ${Math.min(Math.floor(done) + 1, total)} / ${total} 사이클` : "";
+			setStatus(`계산 중… ${Math.round(100 * done / total)}%${label}`, true, done / total);
 		});
 		lastOut = out;
 		lastMode = mode;
@@ -448,153 +421,151 @@ function stat(label: string, value: string, hint?: string): HTMLElement {
 	return d;
 }
 
-// 여러 사이클을 시간축으로 이어 붙인다 (쓰기-읽기 시퀀스 표시용)
-function joinCycles(cs: SimResult[]): { t: number[]; v: number[]; i: number[]; x: number[]; w: number[] } {
-	const o = { t: [] as number[], v: [] as number[], i: [] as number[], x: [] as number[], w: [] as number[] };
+// 여러 사이클을 시간축으로 이어 붙인다
+function joinCycles(cs: SimResult[]): { t: number[]; v: number[]; i: number[]; r: number[]; T: number[] } {
+	const o = { t: [] as number[], v: [] as number[], i: [] as number[], r: [] as number[], T: [] as number[] };
 	let off = 0;
-	for (const r of cs) {
-		for (let k = 0; k < r.t.length; k++) {
-			o.t.push(r.t[k] + off);
-			o.v.push(r.vApp[k]);
-			o.i.push(r.i[k]);
-			o.x.push(r.x[k]);
-			o.w.push(r.w[k]);
+	for (const c of cs) {
+		for (let k = 0; k < c.t.length; k++) {
+			o.t.push(c.t[k] + off);
+			o.v.push(c.vApp[k]);
+			o.i.push(c.i[k]);
+			o.r.push(c.rMin[k]);
+			o.T.push(c.T[k]);
 		}
-		off += r.t[r.t.length - 1];
+		off += c.t[c.t.length - 1];
 	}
 	return o;
+}
+
+function maxOf(a: ArrayLike<number>): number {
+	let m = -Infinity;
+	for (let k = 0; k < a.length; k++) m = Math.max(m, a[k]);
+	return m;
+}
+
+// 시간 파형 카드 공통: 인가 전압, 전류, 가장 가는 곳 CF 반경, 최고 온도, 최고 온도 시점의 CF 형상
+function timeCards(sub?: string): CardSpec[] {
+	return [
+		{ id: "v", title: "인가 전압", sub },
+		{ id: "i", title: "전류", sub },
+		{ id: "r", title: "가장 가는 곳 CF 반경", sub },
+		{ id: "T", title: "최고 온도", sub },
+		{ id: "map", title: "CF 형상과 온도 분포", sub: "최고 온도 시점 (cf. [R] Fig. 2)", wide: true, tall: true },
+	];
+}
+
+function drawTime(t: number[], v: number[], i: number[], r: number[], T: number[], hot: SimResult["hot"], g: SimResult["grid"], iLog: boolean): void {
+	const tu = timeUnit(t[t.length - 1]);
+	timeChart(cards.get("v")!, t, v, { tScale: tu.scale, tLabel: tu.label, yTitle: "전압 (V)", unit: "V" });
+	if (iLog) timeChart(cards.get("i")!, t, i, { tScale: tu.scale, tLabel: tu.label, yTitle: "|전류| (A)", unit: "A", yLog: true, absolute: true });
+	else timeChart(cards.get("i")!, t, i, { tScale: tu.scale, tLabel: tu.label, yTitle: "전류 (mA)", unit: "A", yScale: 1e3 });
+	timeChart(cards.get("r")!, t, r, { tScale: tu.scale, tLabel: tu.label, yTitle: "반경 (nm)", unit: "m", yScale: 1e9, color: 2 });
+	timeChart(cards.get("T")!, t, T, { tScale: tu.scale, tLabel: tu.label, yTitle: "온도 (K)", unit: "K" });
+	profileMapChart(cards.get("map")!, g.rFaces, g.zFaces, hot.T, hot.rb, g.zc);
 }
 
 function render(out: JobOutput): void {
 	const stats = $("stats");
 	stats.replaceChildren();
-	const note = $("note");
-	note.hidden = true;
 	$("csv-summary").hidden = out.kind === "fixed" || lastMode === "pulse";
 	if (out.kind === "fixed") {
-		renderFixed(out.v, out.i, stats);
+		renderFixed(out, stats);
 		return;
 	}
 	if (lastMode === "sweep") renderSweep(out, stats);
 	else if (lastMode === "pulse") renderPulse(out, stats);
 	else renderSequence(out, stats);
-	if (out.cycles.length > 1) {
-		note.hidden = false;
-		note.textContent = "RESET 중 필라멘트 폭 변화식이 근거 논문에 없어 폭이 유지됩니다. 2번째 사이클부터의 거동은 근사입니다 (A16).";
-	}
 }
 
 function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 	const n = out.cycles.length;
 	const multi = n > 1;
 	const specs: CardSpec[] = [{ id: "iv", title: "I-V", sub: multi ? `${n}개 사이클 겹침` : "|I|, 로그 눈금", wide: true, tall: true }];
-	if (multi) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: "0.2 V 읽기", wide: true });
-	specs.push({ id: "v", title: "인가 전압", sub: multi ? "마지막 사이클" : undefined }, { id: "i", title: "전류", sub: multi ? "마지막 사이클, |I| 로그" : "|I|, 로그 눈금" }, { id: "state", title: "상태 변수", sub: multi ? "마지막 사이클" : "갭 x, CF 폭 w", wide: true });
+	if (multi) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: "0.1 V 읽기", wide: true });
+	specs.push(...timeCards(multi ? "마지막 사이클" : undefined));
 	ensureCards(specs);
 	ivChart(cards.get("iv")!, out.cycles.map((r) => ({ v: r.vApp, i: r.i })));
 	const last = out.cycles[n - 1];
-	const tu = timeUnit(last.t[last.t.length - 1]);
-	timeChart(cards.get("v")!, last.t, last.vApp, { tScale: tu.scale, tLabel: tu.label, yTitle: "전압 (V)", unit: "V" });
-	timeChart(cards.get("i")!, last.t, last.i, { tScale: tu.scale, tLabel: tu.label, yTitle: "|전류| (A)", unit: "A", yLog: true, absolute: true });
-	stateChart(cards.get("state")!, last.t, last.x, last.w, tu.scale, tu.label);
-	const lrs = out.summary.map((s) => s.rLrs);
-	const hrs = out.summary.map((s) => s.rEnd);
-	const vset = out.summary.map((s) => s.vSet);
-	const vreset = out.summary.map((s) => s.vReset);
+	drawTime(Array.from(last.t), Array.from(last.vApp), Array.from(last.i), Array.from(last.rMin), Array.from(last.T), last.hot, last.grid, true);
+	const s = out.summary;
+	const lrs = s.map((c) => c.rLrs);
+	const hrs = s.map((c) => c.rHrs);
 	if (multi) {
 		histogramChart(cards.get("hist")!, lrs, hrs);
-		const [ms, ss] = meanStd(vset);
-		const [mr, sr] = meanStd(vreset);
+		const [mr, sr] = meanStd(s.map((c) => c.vReset));
+		const [ms, ss] = meanStd(s.map((c) => c.vSet));
 		stats.append(
+			stat("V_RESET", `${mr.toFixed(2)} ± ${sr.toFixed(2)} V`, "평균 ± 표준편차"),
 			stat("V_SET", `${ms.toFixed(2)} ± ${ss.toFixed(2)} V`, "평균 ± 표준편차"),
-			stat("V_RESET", `${mr.toFixed(2)} ± ${sr.toFixed(2)} V`, "|I| 최대 지점"),
-			stat("R_LRS", siFormat(median(lrs), "Ω"), "중앙값"),
 			stat("R_HRS", siFormat(median(hrs), "Ω"), "중앙값"),
+			stat("R_LRS", siFormat(median(lrs), "Ω"), "중앙값"),
 			stat("HRS / LRS", ratio(median(hrs) / median(lrs))),
 		);
 	} else {
-		const s = out.summary[0];
+		const c = s[0];
 		stats.append(
-			stat("V_SET", `${s.vSet.toFixed(2)} V`, "갭 < a 되는 전압"),
-			stat("V_RESET", `${s.vReset.toFixed(2)} V`, "|I| 최대 지점"),
-			stat("R_LRS", siFormat(s.rLrs, "Ω"), "0.2 V 읽기"),
-			stat("R_HRS", siFormat(s.rEnd, "Ω"), "0.2 V 읽기"),
-			stat("HRS / LRS", ratio(s.rEnd / s.rLrs)),
-			stat("T_max", `${Math.max(...last.T).toFixed(0)} K`),
+			stat("V_RESET", `${c.vReset.toFixed(2)} V`, `I_RESET ${siFormat(Math.abs(c.iReset), "A")}`),
+			stat("V_SET", Number.isFinite(c.vSet) ? `${c.vSet.toFixed(2)} V` : "—", "R이 1/10로"),
+			stat("R_HRS", siFormat(c.rHrs, "Ω"), "RESET 후, 0.1 V"),
+			stat("R_LRS", siFormat(c.rLrs, "Ω"), "SET 후, 0.1 V"),
+			stat("HRS / LRS", ratio(c.rHrs / c.rLrs)),
+			stat("T_max", `${maxOf(last.T).toFixed(0)} K`),
 		);
 	}
 }
 
 function renderPulse(out: TransientOutput, stats: HTMLElement): void {
 	const r = out.cycles[0];
-	const isSet = state.pulse.polarity === "set";
-	ensureCards([
-		{ id: "v", title: "인가 전압" },
-		{ id: "i", title: "전류", sub: "단자 전류, C_P 충전 포함" },
-		{ id: "state", title: "상태 변수", sub: "갭 x, CF 폭 w", wide: true },
-	]);
-	const tu = timeUnit(r.t[r.t.length - 1]);
-	timeChart(cards.get("v")!, r.t, r.vApp, { tScale: tu.scale, tLabel: tu.label, yTitle: "전압 (V)", unit: "V" });
-	timeChart(cards.get("i")!, r.t, r.i, { tScale: tu.scale, tLabel: tu.label, yTitle: "전류 (µA)", unit: "A", yScale: 1e6 });
-	stateChart(cards.get("state")!, r.t, r.x, r.w, tu.scale, tu.label);
-	const p = state.params;
-	const before = readResistance(r.x[0], r.w[0], p);
-	const after = out.summary[0].rEnd;
-	let peak = 0;
-	for (let k = 0; k < r.i.length; k++) peak = Math.max(peak, Math.abs(r.i[k]));
+	const isSet = state.pulse.op === "set";
+	ensureCards(timeCards());
+	drawTime(Array.from(r.t), Array.from(r.vApp), Array.from(r.i), Array.from(r.rMin), Array.from(r.T), r.hot, r.grid, false);
 	stats.append(
-		stat("R 펄스 전", siFormat(before, "Ω"), "0.2 V 읽기"),
-		stat("R 펄스 후", siFormat(after, "Ω"), "0.2 V 읽기"),
-		stat("변화", ratio(isSet ? before / after : after / before), isSet ? "R 감소" : "R 증가"),
-		stat("|I| 최대", siFormat(peak, "A")),
-		stat("T_max", `${Math.max(...r.T).toFixed(0)} K`),
+		stat("R 펄스 전", siFormat(out.rStart, "Ω"), isSet ? "RESET 스윕 뒤 HRS" : "포밍된 LRS"),
+		stat("R 펄스 후", siFormat(out.rEnd, "Ω"), "0.1 V 읽기"),
+		stat("변화", ratio(isSet ? out.rStart / out.rEnd : out.rEnd / out.rStart), isSet ? "R 감소" : "R 증가"),
+		stat("|I| 최대", siFormat(maxOf(Array.from(r.i, Math.abs)), "A")),
+		stat("T_max", `${maxOf(r.T).toFixed(0)} K`),
 	);
-	if (isSet) {
-		let k = 0;
-		while (k < r.x.length && r.x[k] >= p.a) k++;
-		stats.append(stat("갭 닫힘", k < r.x.length ? siFormat(r.t[k], "s") : "닫히지 않음", "x < a"));
-	}
 }
 
 function renderSequence(out: TransientOutput, stats: HTMLElement): void {
 	const n = out.cycles.length;
 	const multi = n > 1;
-	const specs: CardSpec[] = [{ id: "read", title: "읽기 저항", sub: `사이클마다 SET 후 / RESET 후, ${state.sequence.readV} V`, wide: true }];
-	if (multi && state.variabilityOn) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: `${state.sequence.readV} V 읽기`, wide: true });
-	specs.push({ id: "v", title: "인가 전압", sub: multi ? `${n}개 사이클 연속` : undefined }, { id: "i", title: "전류", sub: "|I|, 로그 눈금" }, { id: "state", title: "상태 변수", sub: "갭 x, CF 폭 w", wide: true });
+	const specs: CardSpec[] = [{ id: "read", title: "읽기 저항", sub: `사이클마다 RESET 후 / SET 후, ${state.sequence.vRead} V`, wide: true }];
+	if (multi && state.variabilityOn) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: `${state.sequence.vRead} V 읽기`, wide: true });
+	specs.push(...timeCards(multi ? `${n}개 사이클 연속` : undefined));
 	ensureCards(specs);
-	const lrs = out.summary.map((s) => s.rLrs);
-	const hrs = out.summary.map((s) => s.rEnd);
+	const lrs = out.summary.map((c) => c.rLrs);
+	const hrs = out.summary.map((c) => c.rHrs);
 	readChart(cards.get("read")!, lrs, hrs);
 	if (cards.has("hist")) histogramChart(cards.get("hist")!, lrs, hrs);
 	const j = joinCycles(out.cycles);
-	const tu = timeUnit(j.t[j.t.length - 1]);
-	timeChart(cards.get("v")!, j.t, j.v, { tScale: tu.scale, tLabel: tu.label, yTitle: "전압 (V)", unit: "V" });
-	timeChart(cards.get("i")!, j.t, j.i, { tScale: tu.scale, tLabel: tu.label, yTitle: "|전류| (A)", unit: "A", yLog: true, absolute: true });
-	stateChart(cards.get("state")!, j.t, j.x, j.w, tu.scale, tu.label);
+	let hotC = out.cycles[0];
+	for (const c of out.cycles) if (maxOf(c.T) > maxOf(hotC.T)) hotC = c;
+	drawTime(j.t, j.v, j.i, j.r, j.T, hotC.hot, hotC.grid, true);
 	const mL = median(lrs);
 	const mH = median(hrs);
 	stats.append(
-		stat("R_LRS", siFormat(mL, "Ω"), multi ? "중앙값" : "SET 후 읽기"),
 		stat("R_HRS", siFormat(mH, "Ω"), multi ? "중앙값" : "RESET 후 읽기"),
+		stat("R_LRS", siFormat(mL, "Ω"), multi ? "중앙값" : "SET 후 읽기"),
 		stat("HRS / LRS", ratio(mH / mL)),
-		stat("T_max", `${Math.max(...out.cycles.map((c) => Math.max(...c.T))).toFixed(0)} K`),
+		stat("T_max", `${Math.max(...out.cycles.map((c) => maxOf(c.T))).toFixed(0)} K`),
 	);
 }
 
-function renderFixed(v: Float64Array, i: Float64Array, stats: HTMLElement): void {
-	ensureCards([{ id: "iv", title: "읽기 I-V", sub: "고정 상태, 스위칭 없음", wide: true, tall: true }]);
-	ivChart(cards.get("iv")!, [{ v, i }], 1e-15);
-	const p = state.params;
+function renderFixed(out: FixedOutput, stats: HTMLElement): void {
+	ensureCards([
+		{ id: "iv", title: "읽기 I-V", sub: "고정 상태, 스위칭 없음", wide: true, tall: true },
+	]);
+	ivChart(cards.get("iv")!, [{ v: out.v, i: out.i }], 1e-15);
 	const f = state.fixed;
-	const w = cfWidthFromArea(f.aCf);
 	stats.append(
-		stat("R (0.2 V)", siFormat(readResistance(Math.min(f.x, p.L0), w, p, 0.2), "Ω"), "R_L 포함"),
-		stat("CF 지름 w", `${(w * 1e9).toFixed(2)} nm`, "√(4A/π)"),
-		stat("필라멘트 수 N", filamentCount(p).toLocaleString("ko-KR")),
-		stat(`I (${f.vMax} V)`, siFormat(i[i.length - 1], "A")),
+		stat("R (0.1 V)", siFormat(out.r01, "Ω"), "R_L 포함"),
+		stat("잘록 구간 면적", `${(Math.PI * f.rNeck * f.rNeck * 1e18).toFixed(1)} nm²`, "π r²"),
+		stat("잘록 구간 길이", `${(f.neckLen * 1e9).toFixed(0)} nm`),
+		stat("필라멘트 수 N", filamentCount(state.params).toLocaleString("ko-KR")),
 	);
-	if (w > p.WCF) stats.append(stat("주의", "w > W_CF", "면적이 스위칭층 폭보다 큼"));
 }
 
 // ---------------------------------------------------------------- 내보내기

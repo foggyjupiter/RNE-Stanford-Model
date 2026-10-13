@@ -1,12 +1,14 @@
-// 파형, 과도 시뮬레이션, 읽기 / 고정 상태 계산, 변동성.
-// python/rram_model.py를 옮긴 것. (A#)는 ASSUMPTIONS.md 참고.
+// 파형, 회로 풀이, 과도 시뮬레이션, 읽기 / 고정 상태, 변동성. python/rram_model.py를 옮긴 것.
+// (A#)는 ASSUMPTIONS.md 참고.
 
-import { EV, W_MIN, filamentCount, type Params } from "./params";
-import { cellCurrent, cfWidthFromArea, filamentCurrent, solveVsw, stateRates, temperature } from "./physics";
-import { integrate } from "./solver";
+import { DEFAULT_GRID, EV, filamentCount, type GridSpec, type Params } from "./params";
+import { FieldSolver, boundaryVelocity, makeGrid, type Fields, type Grid } from "./fields";
+
+export type Op = "set" | "reset";
 
 export interface Waveform {
-	v: (t: number) => number;	// 시간 t [s]에서의 인가 전압 [V]
+	v: (t: number) => number;	// 인가 전압 [V]
+	op: (t: number) => Op;	// 그 시각의 동작
 	tEnd: number;	// [s]
 	corners: number[];	// 꺾임점 [s]
 }
@@ -24,172 +26,248 @@ function piecewiseLinear(ts: number[], vs: number[]): (t: number) => number {
 	};
 }
 
-// 삼각파 0 -> vSet -> 0 -> vReset -> 0, 구간마다 tRamp [s]
-export function sweepWaveform(vSet = 2.5, vReset = -2.5, tRamp = 100e-6): Waveform {
+// unipolar 스윕: 0 -> vReset -> 0 (RESET 동작) -> vSet -> 0 (SET 동작), 구간마다 tRamp [s].
+// 포밍된 LRS에서 시작하므로 RESET이 먼저다
+export function sweepWaveform(vReset = 1.6, vSet = 4.0, tRamp = 0.25): Waveform {
 	const ts = [0, 1, 2, 3, 4].map((k) => k * tRamp);
-	return { v: piecewiseLinear(ts, [0, vSet, 0, vReset, 0]), tEnd: ts[4], corners: ts };
+	return { v: piecewiseLinear(ts, [0, vReset, 0, vSet, 0]), op: (t) => (t < 2 * tRamp ? "reset" : "set"), tEnd: ts[4], corners: ts };
 }
 
-// 매뉴얼 AC 덱과 같은 사다리꼴 펄스 (지연 0, 상승 = 하강 = tEdge, 평탄부 tWidth)
-export function pulseWaveform(vPulse = 2, tEdge = 10e-9, tWidth = 80e-9, tTotal = 100e-9): Waveform {
-	const ts = [0, tEdge, tEdge + tWidth, 2 * tEdge + tWidth, Math.max(tTotal, 2 * tEdge + tWidth)];
-	return { v: piecewiseLinear(ts, [0, vPulse, vPulse, 0, 0]), tEnd: ts[4], corners: ts };
+// RESET만 하는 삼각파 0 -> vMax -> 0 ([R] Fig. 3, 5 비교용)
+export function resetRampWaveform(vMax: number, tRamp: number): Waveform {
+	const ts = [0, tRamp, 2 * tRamp];
+	return { v: piecewiseLinear(ts, [0, vMax, 0]), op: () => "reset", tEnd: ts[2], corners: ts };
 }
 
-// 직렬 compliance 저항: vApp >= 0 (SET)이면 rs, vApp < 0이면 rsReset (A14) [ohm]
-export function seriesR(vApp: number, rs: number, rsReset: number): number {
-	return vApp >= 0 ? rs : rsReset;
+// 사다리꼴 펄스 하나 (지연 0, 상승 = 하강 = tEdge)
+export function pulseWaveform(op: Op, vPulse: number, tEdge = 10e-9, tWidth = 1e-6): Waveform {
+	const ts = [0, tEdge, tEdge + tWidth, 2 * tEdge + tWidth];
+	return { v: piecewiseLinear(ts, [0, vPulse, vPulse, 0]), op: () => op, tEnd: ts[3], corners: ts };
+}
+
+// 직렬 compliance 저항: SET 동작이면 rs, RESET 동작이면 rsReset (A14) [ohm]
+export function seriesR(op: Op, rs: number, rsReset: number): number {
+	return op === "set" ? rs : rsReset;
+}
+
+// Brent 근 찾기 (f(a), f(b) 부호가 반대). scipy brentq와 같은 허용오차 의미: |dx| <= xtol + rtol*|x|
+export function brent(fn: (x: number) => number, a: number, b: number, xtol = 1e-7, rtol = 1e-9, maxIter = 200): number {
+	let fa = fn(a);
+	let fb = fn(b);
+	if (fa === 0) return a;
+	if (fb === 0) return b;
+	if (fa * fb > 0) throw new Error("brent: 구간 양 끝 부호가 같음");
+	let c = a;
+	let fc = fa;
+	let d = b - a;
+	let e = d;
+	for (let it = 0; it < maxIter; it++) {
+		if (fb * fc > 0) {
+			c = a;
+			fc = fa;
+			d = b - a;
+			e = d;
+		}
+		if (Math.abs(fc) < Math.abs(fb)) {
+			a = b;
+			b = c;
+			c = a;
+			fa = fb;
+			fb = fc;
+			fc = fa;
+		}
+		const tol = 0.5 * (xtol + rtol * Math.abs(b));
+		const m = 0.5 * (c - b);
+		if (Math.abs(m) <= tol || fb === 0) return b;
+		if (Math.abs(e) >= tol && Math.abs(fa) > Math.abs(fb)) {
+			const s = fb / fa;
+			let pp: number;
+			let qq: number;
+			if (a === c) {
+				pp = 2 * m * s;
+				qq = 1 - s;
+			} else {
+				const q0 = fa / fc;
+				const r = fb / fc;
+				pp = s * (2 * m * q0 * (q0 - r) - (b - a) * (r - 1));
+				qq = (q0 - 1) * (r - 1) * (s - 1);
+			}
+			if (pp > 0) qq = -qq;
+			else pp = -pp;
+			if (2 * pp < Math.min(3 * m * qq - Math.abs(tol * qq), Math.abs(e * qq))) {
+				e = d;
+				d = pp / qq;
+			} else {
+				d = m;
+				e = d;
+			}
+		} else {
+			d = m;
+			e = d;
+		}
+		a = b;
+		fa = fb;
+		b += Math.abs(d) > tol ? d : m > 0 ? tol : -tol;
+		fb = fn(b);
+	}
+	return b;
+}
+
+// 회로 방정식을 셀 전압 Vc에 대해 푼다:
+// (vApp - Vc)/rSer = N*I(Vc) + CP*(Vc - vPrev)/dt   (CP 항은 후진 Euler, A11)
+export function solveCell(fs: FieldSolver, p: Params, vApp: number, rSer: number, cp = 0, dt = 0, vPrev = 0): { vc: number; fld: Fields } {
+	const c = cp > 0 && dt > 0 ? cp / dt : 0;
+	const n = filamentCount(p);
+	if (vApp === 0 && c === 0) return { vc: 0, fld: fs.solve(0) };
+	const pts = c > 0 ? [0, vApp, vPrev] : [0, vApp];
+	const lo = Math.min(...pts);
+	const hi = Math.max(...pts);
+	if (hi - lo < 1e-15) return { vc: lo, fld: fs.solve(lo) };
+	const g = (vc: number): number => (vApp - vc) / rSer - n * fs.solve(vc).I - c * (vc - vPrev);
+	const vc = brent(g, lo, hi);
+	return { vc, fld: fs.solve(vc) };
 }
 
 export interface SimOptions {
 	rs?: number;	// SET compliance 저항 [ohm]
 	rsReset?: number;	// RESET 직렬 저항 [ohm]
-	includeCp?: boolean;	// CP를 상태 변수로 (펄스) 또는 무시 (스윕) (A11)
-	nOut?: number;	// 균일 출력점 수
-	maxStep?: number;	// [s], 기본 tEnd/2000
-	rtol?: number;
-	noiseDt?: number;	// 식 (8),(9)의 chi(t) 유지 시간 [s]. undefined면 잡음 없음 (A12)
-	rng?: () => number;	// 표준정규 난수 생성기, noiseDt를 쓸 때 필요
+	includeCp?: boolean;	// CP 포함 (펄스)
+	dvMax?: number;	// 한 스텝 전압 변화 상한 [V]
+	drbMax?: number;	// 한 스텝 경계 이동 상한 [m], 기본 drFine/4
+	grid?: GridSpec;
+	onProgress?: (frac: number) => void;
 }
 
 export interface SimResult {
 	t: Float64Array;	// [s]
 	vApp: Float64Array;	// [V]
-	vSw: Float64Array;	// [V]
+	vCell: Float64Array;	// 셀 양단 전압 [V]
 	i: Float64Array;	// 단자 전류 [A]
-	x: Float64Array;	// 갭 [m]
-	w: Float64Array;	// CF 폭 [m]
-	T: Float64Array;	// 필라멘트 온도 [K]
-	stats: { steps: number; rejected: number; nfev: number; n: number };
+	rMin: Float64Array;	// 가장 가는 곳 CF 반경 [m]
+	T: Float64Array;	// 최고 온도 [K]
+	rbEnd: Float64Array;	// 마지막 CF 경계 반경 r_b(z) [m]
+	hot: { t: number; v: number; rb: Float64Array; T: Float64Array };	// 최고 온도 시점의 형상과 온도 분포
+	grid: Grid;
+	steps: number;
 }
 
-export function simulate(wf: Waveform, x0: number, w0: number, p: Params, o: SimOptions = {}): SimResult {
-	const rs = o.rs ?? 0;
+// CF 경계를 시간에 따라 움직이며 응답을 계산한다. 경계 이동은 명시적 Euler + 적응 스텝 (A34)
+export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p: Params, o: SimOptions = {}): SimResult {
+	const gs = o.grid ?? DEFAULT_GRID;
+	const g = makeGrid(p, gs);
+	const nz = g.nz;
+	const rs = o.rs ?? 3e3;
 	const rsReset = o.rsReset ?? 0;
-	const includeCp = o.includeCp ?? false;
-	const nOut = o.nOut ?? 2001;
-	const maxStep = o.maxStep ?? wf.tEnd / 2000;
-	const nFil = filamentCount(p);
-
-	// 꺾임점: 파형 꺾임점과 잡음 갱신 시점
-	const bps = wf.corners.filter((c) => c > 0 && c < wf.tEnd);
-	let chi: Float64Array | null = null;
-	if (o.noiseDt !== undefined) {
-		if (!o.rng) throw new Error("simulate: noiseDt를 쓰려면 rng가 필요합니다");
-		const nChi = Math.ceil(wf.tEnd / o.noiseDt);
-		chi = new Float64Array(2 * nChi);
-		for (let k = 0; k < chi.length; k++) chi[k] = o.rng();
-		for (let k = 1; k < nChi; k++) bps.push(k * o.noiseDt);
-	}
-	const cur = [0, 0];	// 잡음 표본, 구간 안에서는 일정
-
-	const tSet = new Set<number>();
-	for (let k = 0; k < nOut; k++) tSet.add(wf.tEnd * k / (nOut - 1));
-	for (const c of [...wf.corners, ...bps]) tSet.add(c);
-	const sorted = [...tSet].filter((t) => t >= 0 && t <= wf.tEnd).sort((p1, p2) => p1 - p2);
-	// 거의 겹치는 점 제거 (linspace와 꺾임점의 부동소수 반올림 차이) — ~1e-25 s짜리 스텝을 막는다
-	const tOut: number[] = [];
-	for (const t of sorted) {
-		if (tOut.length === 0 || t - tOut[tOut.length - 1] > 1e-9 * wf.tEnd) tOut.push(t);
-		else if (t === wf.tEnd) tOut[tOut.length - 1] = t;
-	}
-
-	const rhs = includeCp
-		? (t: number, y: Float64Array, out: Float64Array): void => {
-			const r = stateRates(y[2], y[0], y[1], p, cur[0], cur[1]);
-			const va = wf.v(t);
-			const iCell = nFil * r.iF + y[2] / p.RH;
-			out[0] = r.dx;
-			out[1] = r.dw;
-			out[2] = ((va - y[2]) / (p.RL + seriesR(va, rs, rsReset)) - iCell) / p.CP;
+	const dvMax = o.dvMax ?? 1e-2;
+	const drbMax = o.drbMax ?? gs.drFine / 4;
+	let rb = new Float64Array(nz);
+	if (rb0 === null) rb.fill(p.phi0 / 2);
+	else if (typeof rb0 === "number") rb.fill(rb0);
+	else rb = Float64Array.from(rb0);
+	const corners = [...new Set(wf.corners.filter((c) => c > 0 && c < wf.tEnd))].sort((a, b) => a - b);
+	const ts: number[] = [];
+	const vas: number[] = [];
+	const vcs: number[] = [];
+	const is: number[] = [];
+	const rmins: number[] = [];
+	const tms: number[] = [];
+	let hot = { t: 0, v: 0, rb: Float64Array.from(rb), T: new Float64Array(0) };
+	let hotT = -Infinity;
+	let t = 0;
+	let vc = 0;
+	let dt = 0;
+	let tPrev: Float64Array | null = null;
+	const eps = 1e-12 * Math.max(wf.tEnd, 1e-9);
+	for (;;) {
+		const va = wf.v(t);
+		const op = wf.op(Math.min(t, wf.tEnd * (1 - 1e-12)));
+		const rSer = p.RL + seriesR(op, rs, rsReset);
+		const fs = new FieldSolver(g, p, rb);
+		fs.tLast = tPrev;
+		const sol = solveCell(fs, p, va, rSer, o.includeCp ? p.CP : 0, dt, vc);
+		vc = sol.vc;
+		tPrev = sol.fld.T;
+		ts.push(t);
+		vas.push(va);
+		vcs.push(vc);
+		is.push((va - vc) / rSer);
+		let rmin = Infinity;
+		for (let j = 0; j < nz; j++) rmin = Math.min(rmin, rb[j]);
+		rmins.push(rmin);
+		tms.push(sol.fld.tMax);
+		if (sol.fld.tMax > hotT) {
+			hotT = sol.fld.tMax;
+			hot = { t, v: va, rb: Float64Array.from(rb), T: sol.fld.T };
 		}
-		: (t: number, y: Float64Array, out: Float64Array): void => {
-			const va = wf.v(t);
-			const vs = solveVsw(va, y[0], y[1], p, seriesR(va, rs, rsReset));
-			const r = stateRates(vs, y[0], y[1], p, cur[0], cur[1]);
-			out[0] = r.dx;
-			out[1] = r.dw;
-		};
-	const y0 = includeCp ? [x0, w0, 0] : [x0, w0];
-	const atol = includeCp ? [1e-14, 1e-14, 1e-7] : [1e-14, 1e-14];	// [m, m, V]
-	// 스위칭 구간 스텝 상한: 한 스텝에서 x, w는 최대 a/10까지만 바뀐다 [m]
-	const maxDelta = includeCp ? [p.a / 10, p.a / 10, Infinity] : [p.a / 10, p.a / 10];
-
-	const res = integrate(rhs, y0, tOut, {
-		rtol: o.rtol ?? 1e-6,
-		atol,
-		maxStep,
-		maxDelta,
-		breakpoints: bps,
-		onSegment: (ta, tb) => {
-			if (!chi || o.noiseDt === undefined) return;
-			const k = Math.min(Math.floor((ta + tb) / 2 / o.noiseDt), chi.length / 2 - 1);
-			cur[0] = chi[2 * k];
-			cur[1] = chi[2 * k + 1];
-		},
-		onSegmentEnd: (y) => {
-			y[0] = Math.min(Math.max(y[0], 0), p.L0);
-			y[1] = Math.min(Math.max(y[1], W_MIN), p.WCF);
-		},
-	});
-
-	const n = tOut.length;
-	const out: SimResult = {
-		t: Float64Array.from(tOut),
-		vApp: new Float64Array(n),
-		vSw: new Float64Array(n),
-		i: new Float64Array(n),
-		x: new Float64Array(n),
-		w: new Float64Array(n),
-		T: new Float64Array(n),
-		stats: { steps: res.steps, rejected: res.rejected, nfev: res.nfev, n: nFil },
+		if (t >= wf.tEnd) break;
+		o.onProgress?.(t / wf.tEnd);
+		const vel = boundaryVelocity(op, rb, g, sol.fld, p);
+		let dtNext = wf.tEnd - t;
+		let vm = 0;
+		for (let j = 0; j < nz; j++) vm = Math.max(vm, Math.abs(vel[j]));
+		if (vm > 0) dtNext = Math.min(dtNext, drbMax / vm);
+		const slope = Math.abs(wf.v(t + eps) - va) / eps;
+		if (slope > 0) dtNext = Math.min(dtNext, dvMax / slope);
+		const nxt = corners.find((c) => c > t + 1e-18);
+		if (nxt !== undefined) dtNext = Math.min(dtNext, nxt - t);	// 파형 꺾임점을 정확히 지난다
+		dt = Math.max(dtNext, 1e-15);
+		for (let j = 0; j < nz; j++) rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt, 0), p.Rdom);
+		t = Math.min(t + dt, wf.tEnd);
+	}
+	return {
+		t: Float64Array.from(ts),
+		vApp: Float64Array.from(vas),
+		vCell: Float64Array.from(vcs),
+		i: Float64Array.from(is),
+		rMin: Float64Array.from(rmins),
+		T: Float64Array.from(tms),
+		rbEnd: Float64Array.from(rb),
+		hot,
+		grid: g,
+		steps: ts.length,
 	};
-	for (let k = 0; k < n; k++) {
-		const yk = res.y[k];
-		const va = wf.v(tOut[k]);
-		const x = Math.min(Math.max(yk[0], 0), p.L0);
-		const w = Math.min(Math.max(yk[1], W_MIN), p.WCF);
-		const rSer = p.RL + seriesR(va, rs, rsReset);
-		const vs = includeCp ? yk[2] : solveVsw(va, x, w, p, seriesR(va, rs, rsReset));
-		const iF = filamentCurrent(vs, x, w, p).i;
-		out.vApp[k] = va;
-		out.vSw[k] = vs;
-		out.x[k] = x;
-		out.w[k] = w;
-		out.T[k] = temperature(iF, vs, p);
-		out.i[k] = includeCp ? (va - vs) / rSer : nFil * iF + vs / p.RH;	// CP 모드: CP 충전 전류를 포함한 단자 전류
-	}
-	return out;
 }
 
-// vRead에서의 셀 저항 (RL, RH 포함, 스위칭 없음) [ohm]
-export function readResistance(x: number, w: number, p: Params, vRead = 0.2): number {
-	const vs = solveVsw(vRead, x, w, p, 0);
-	return vRead / cellCurrent(vs, x, w, p);
+// ---------------------------------------------------------------- 읽기 / 고정 상태
+function profileOf(rb: number | ArrayLike<number>, g: Grid): Float64Array {
+	return typeof rb === "number" ? new Float64Array(g.nz).fill(rb) : Float64Array.from(rb);
 }
 
-// 고정 상태 모드: 사용자가 정한 갭 x [m]와 CF 면적 aCf [m^2]에서의 정적 I-V, 스위칭 없음
-export function ivFixedState(v: readonly number[], x: number, aCf: number, p: Params, rs = 0): Float64Array {
-	const w = cfWidthFromArea(aCf);
+// vRead에서의 셀 저항 (RL 포함, 스위칭 없음) [ohm]. 0.1 V는 [C] Fig. 3의 측정 조건
+export function readResistance(rb: number | ArrayLike<number>, p: Params, vRead = 0.1, gs: GridSpec = DEFAULT_GRID): number {
+	const g = makeGrid(p, gs);
+	const fs = new FieldSolver(g, p, profileOf(rb, g));
+	const sol = solveCell(fs, p, vRead, p.RL);
+	return vRead / (filamentCount(p) * sol.fld.I);
+}
+
+// 고정 상태 모드용 CF 형상: 가운데 길이 len 구간만 반경 rNeck, 나머지는 phi0/2
+export function neckProfile(rNeck: number, len: number, p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
+	const g = makeGrid(p, gs);
+	const rb = new Float64Array(g.nz).fill(p.phi0 / 2);
+	const mid = p.L0 / 2;
+	for (let j = 0; j < g.nz; j++) if (Math.abs(g.zc[j] - mid) <= len / 2) rb[j] = rNeck;
+	return rb;
+}
+
+// 고정 상태 모드: CF 형상 rb에서의 정적 I-V (RL 포함, 스위칭 없음)
+export function ivFixedState(v: readonly number[], rb: number | ArrayLike<number>, p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
+	const g = makeGrid(p, gs);
+	const fs = new FieldSolver(g, p, profileOf(rb, g));
 	const out = new Float64Array(v.length);
-	for (let k = 0; k < v.length; k++) {
-		const vs = solveVsw(v[k], x, w, p, rs);
-		out[k] = cellCurrent(vs, x, w, p);
-	}
+	for (let k = 0; k < v.length; k++) out[k] = filamentCount(p) * solveCell(fs, p, v[k], p.RL).fld.I;
 	return out;
 }
 
-// ---------------------------------------------------------------- 변동성 (10),(11)
+// ---------------------------------------------------------------- 변동성 [D] (10),(11)
 export interface Variability {
-	sigmaEa: number;	// 사이클 간 Ea 표준편차 [J] (A13)
-	sigmaEi: number;	// 사이클 간 Ei 표준편차 [J] (A13)
-	sigmaEh: number;	// 사이클 간 Eh 표준편차 [J] (A13)
+	sigmaEa: number;	// 사이클 간 Ea(SET) 표준편차 [J] (A13)
+	sigmaEd: number;	// 사이클 간 Ed(RESET) 표준편차 [J] (A13)
 }
 
 export const DEFAULT_VARIABILITY: Readonly<Variability> = Object.freeze({
 	sigmaEa: 0.02 * EV,	// [J]
-	sigmaEi: 0.02 * EV,	// [J]
-	sigmaEh: 0.02 * EV,	// [J]
+	sigmaEd: 0.02 * EV,	// [J]
 });
 
 // 시드를 받는 표준정규 난수 생성기: mulberry32 + Box-Muller
@@ -218,23 +296,29 @@ export function normalRng(seed: number): () => number {
 	};
 }
 
-// 식 (10),(11): 한 사이클의 에너지 장벽을 몬테카를로로 뽑는다
+// [D] 식 (10),(11): 한 사이클의 SET/RESET 장벽을 몬테카를로로 뽑는다 (RESET 장벽은 Ed, A13)
 export function sampleCycleParams(p: Params, v: Variability, rng: () => number): Params {
-	return { ...p, Ea: p.Ea + v.sigmaEa * rng(), Ei: p.Ei + v.sigmaEi * rng(), Eh: p.Eh + v.sigmaEh * rng() };
+	return { ...p, Ea: p.Ea + v.sigmaEa * rng(), Ed: p.Ed + v.sigmaEd * rng() };
 }
 
-// 스윕의 스위칭 전압 (진단용) [V]: V_SET = V>0에서 처음으로 x < a가 되는 전압,
-// V_RESET = 음의 구간에서 |I|가 최대인 인가 전압. 없으면 NaN.
-export function switchingVoltage(r: SimResult, p: Params): { vSet: number; vReset: number } {
-	let vSet = NaN;
-	let vReset = NaN;
-	let iMax = -1;
-	for (let k = 0; k < r.t.length; k++) {
-		if (Number.isNaN(vSet) && r.vApp[k] > 0 && r.x[k] < p.a) vSet = r.vApp[k];
-		if (r.vApp[k] < 0 && Math.abs(r.i[k]) > iMax) {
-			iMax = Math.abs(r.i[k]);
-			vReset = r.vApp[k];
-		}
+// ---------------------------------------------------------------- 진단
+// RESET 구간(전체의 앞 절반, 스윕이 아니면 전체)에서 |I|가 최대인 (V_reset, I_reset)
+export function resetPoint(r: SimResult, sweep = true): { v: number; i: number } {
+	const half = sweep ? r.t[r.t.length - 1] / 2 : Infinity;
+	let k = 0;
+	for (let m = 0; m < r.t.length && r.t[m] <= half; m++) if (Math.abs(r.i[m]) > Math.abs(r.i[k])) k = m;
+	return { v: r.vApp[k], i: r.i[k] };
+}
+
+// SET 구간에서 셀 저항이 처음으로 구간 시작값의 1/10 아래로 떨어지는 인가 전압 [V]
+export function setPoint(r: SimResult): number {
+	const half = r.t[r.t.length - 1] / 2;
+	let r0 = NaN;
+	for (let m = 0; m < r.t.length; m++) {
+		if (r.t[m] <= half || Math.abs(r.vApp[m]) <= 0.05) continue;
+		const R = Math.abs(r.vCell[m] / (r.i[m] === 0 ? 1e-30 : r.i[m]));
+		if (Number.isNaN(r0)) r0 = R;
+		else if (R < r0 / 10) return r.vApp[m];
 	}
-	return { vSet, vReset };
+	return NaN;
 }

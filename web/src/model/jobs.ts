@@ -1,187 +1,216 @@
 // 직렬화 가능한 작업 정의와 순수 실행 함수. 테스트와 Web Worker 안에서 그대로 쓴다.
 
-import { type Params } from "./params";
-import { ivFixedState, normalRng, pulseWaveform, readResistance, sampleCycleParams, simulate, sweepWaveform, switchingVoltage, type SimOptions, type SimResult, type Variability, type Waveform } from "./simulate";
+import { DEFAULT_GRID, type GridSpec, type Params } from "./params";
+import { makeGrid } from "./fields";
+import {
+	ivFixedState, neckProfile, normalRng, pulseWaveform, readResistance, resetPoint, resetRampWaveform,
+	sampleCycleParams, simulate, type Op, type SimResult, type Variability, type Waveform,
+} from "./simulate";
 
-export type WaveSpec =
-	| { kind: "sweep"; vSet: number; vReset: number; tRamp: number }	// [V, V, s]
-	| { kind: "pulse"; vPulse: number; tEdge: number; tWidth: number; tTotal: number };	// [V, s, s, s]
-
-export function makeWaveform(w: WaveSpec): Waveform {
-	if (w.kind === "sweep") return sweepWaveform(w.vSet, w.vReset, w.tRamp);
-	return pulseWaveform(w.vPulse, w.tEdge, w.tWidth, w.tTotal);
+export interface SweepJob {
+	kind: "sweep";
+	vReset: number;	// RESET 구간 최대 전압 [V]
+	vSet: number;	// SET 구간 최대 전압 [V]
+	tRamp: number;	// 구간당 램프 시간 [s]
+	rs: number;	// SET compliance 저항 [ohm]
+	params: Params;
+	cycles: number;	// 각 사이클은 직전 사이클의 끝 상태에서 시작
+	variability?: Variability;	// [D] 식 (10),(11)
+	seed?: number;
+	grid?: GridSpec;
 }
 
-export interface TransientJob {
-	kind: "transient";
-	wave: WaveSpec;
-	x0: number;	// [m]
-	w0: number;	// [m]
+export interface PulseJob {
+	kind: "pulse";
+	op: Op;
+	v: number;	// 진폭 [V]
+	width: number;	// 평탄부 [s]
+	tEdge: number;	// 상승/하강 [s]
+	rs: number;	// SET compliance 저항 [ohm]
 	params: Params;
-	opt: Omit<SimOptions, "rng">;
-	cycles: number;	// 반복 사이클 수, 각 사이클은 직전 사이클의 끝 상태에서 시작
-	variability?: Variability;	// 식 (8)-(11) 활성화, opt.noiseDt 필요
+	grid?: GridSpec;
+}
+
+export interface PulseOp {
+	v: number;	// 진폭 [V]
+	width: number;	// 평탄부 [s]
+}
+
+// 쓰기-읽기 시퀀스: 사이클마다 RESET 펄스 → 읽기 → SET 펄스 → 읽기.
+// 읽기는 vRead에서의 정적 저항 (읽기 전압이 낮아 상태를 바꾸지 않는다고 본다, A36)
+export interface SequenceJob {
+	kind: "sequence";
+	reset: PulseOp;
+	set: PulseOp;
+	vRead: number;	// [V]
+	tEdge: number;	// [s]
+	rs: number;	// SET compliance 저항 [ohm]
+	params: Params;
+	cycles: number;
+	variability?: Variability;
 	seed?: number;
-	vRead?: number;	// 사이클별 저항을 읽는 전압 [V], 기본 0.2
+	grid?: GridSpec;
 }
 
 export interface FixedJob {
 	kind: "fixed";
 	v: number[];	// [V]
-	x: number;	// 갭 [m]
-	aCf: number;	// CF 면적 [m^2]
+	rNeck: number;	// 잘록 구간 반경 [m]
+	neckLen: number;	// 잘록 구간 길이 [m]
 	params: Params;
-	rs?: number;	// [ohm]
+	grid?: GridSpec;
 }
 
-// 쓰기-읽기 시퀀스: 사이클마다 SET 펄스 → 읽기 → RESET 펄스 → 읽기.
-// 각 동작은 따로 시뮬레이션하고 시간축을 이어 붙인다 (동작마다 알맞은 스텝 상한을 쓰기 위해).
-export interface PulseOp {
-	v: number;	// 펄스 진폭 [V]
-	width: number;	// 평탄부 폭 [s]
-}
-
-export interface SequenceJob {
-	kind: "sequence";
-	set: PulseOp;
-	reset: PulseOp;
-	read: PulseOp;
-	tEdge: number;	// 상승/하강 시간 [s]
-	rs: number;	// SET 펄스의 compliance 저항 [ohm]. 읽기는 0, RESET은 Rs_reset = 0 (A14)
-	x0: number;	// [m]
-	w0: number;	// [m]
-	params: Params;
-	cycles: number;
-	variability?: Variability;	// 식 (10),(11)만 적용, 펄스에서는 chi(t) 생략 (A23)
-	seed?: number;
-}
-
-export type Job = TransientJob | FixedJob | SequenceJob;
+export type Job = SweepJob | PulseJob | SequenceJob | FixedJob;
 
 export interface CycleSummary {
-	rLrs: number;	// 양의 반주기 뒤(0 V 통과 시점 상태) vRead에서의 저항, 펄스는 NaN [ohm]
-	rEnd: number;	// 사이클 끝 상태의 vRead 저항 [ohm]
-	vSet: number;	// [V]
+	rLrs: number;	// LRS 읽기 저항 [ohm]
+	rHrs: number;	// HRS 읽기 저항 [ohm]
 	vReset: number;	// [V]
+	iReset: number;	// [A]
+	vSet: number;	// [V], 스윕만
 }
 
 export interface TransientOutput {
 	kind: "transient";
 	cycles: SimResult[];
 	summary: CycleSummary[];
+	rStart: number;	// 시작 상태 읽기 저항 [ohm]
+	rEnd: number;	// 끝 상태 읽기 저항 [ohm]
 }
 
 export interface FixedOutput {
 	kind: "fixed";
 	v: Float64Array;	// [V]
 	i: Float64Array;	// [A]
+	r01: number;	// 0.1 V 읽기 저항 [ohm]
+	rb: Float64Array;	// CF 형상 [m]
+	z: Float64Array;	// 높이 [m]
 }
 
 export type JobOutput = TransientOutput | FixedOutput;
 
 export type ProgressFn = (done: number, total: number) => void;
 
-// 각 결과의 시간축을 앞 결과의 끝 시각만큼 밀어 하나로 잇는다
-function concatResults(parts: SimResult[]): SimResult {
-	// 두 번째 구간부터는 첫 점(직전 구간의 끝과 같은 시각·상태)을 뺀다
+export const V_READ = 0.1;	// 기본 읽기 전압 [V], [C] Fig. 3
+
+// 각 결과의 시간축을 앞 결과의 끝 시각만큼 밀어 하나로 잇는다 (두 번째부터는 첫 점 제외)
+export function concatResults(parts: SimResult[]): SimResult {
 	const n = parts.reduce((s, r, idx) => s + r.t.length - (idx > 0 ? 1 : 0), 0);
-	const out: SimResult = {
-		t: new Float64Array(n),
-		vApp: new Float64Array(n),
-		vSw: new Float64Array(n),
-		i: new Float64Array(n),
-		x: new Float64Array(n),
-		w: new Float64Array(n),
-		T: new Float64Array(n),
-		stats: { steps: 0, rejected: 0, nfev: 0, n: parts[0].stats.n },
-	};
+	const mk = (): Float64Array => new Float64Array(n);
+	const out: SimResult = { ...parts[parts.length - 1], t: mk(), vApp: mk(), vCell: mk(), i: mk(), rMin: mk(), T: mk(), steps: 0 };
 	let k = 0;
 	let offset = 0;
+	let hotT = -Infinity;
 	for (let idx = 0; idx < parts.length; idx++) {
 		const r = parts[idx];
 		for (let j = idx > 0 ? 1 : 0; j < r.t.length; j++) {
 			out.t[k] = r.t[j] + offset;
 			out.vApp[k] = r.vApp[j];
-			out.vSw[k] = r.vSw[j];
+			out.vCell[k] = r.vCell[j];
 			out.i[k] = r.i[j];
-			out.x[k] = r.x[j];
-			out.w[k] = r.w[j];
+			out.rMin[k] = r.rMin[j];
 			out.T[k] = r.T[j];
 			k++;
 		}
+		let tm = -Infinity;
+		for (let j = 0; j < r.T.length; j++) tm = Math.max(tm, r.T[j]);
+		if (tm > hotT) {
+			hotT = tm;
+			out.hot = { ...r.hot, t: r.hot.t + offset };
+		}
 		offset += r.t[r.t.length - 1];
-		out.stats.steps += r.stats.steps;
-		out.stats.rejected += r.stats.rejected;
-		out.stats.nfev += r.stats.nfev;
+		out.steps += r.steps;
 	}
 	return out;
 }
 
-// 읽기 펄스 평탄부 가운데의 V/I [ohm]. Rs = 0이므로 RL을 포함한 셀 저항 = readResistance()와 같은 정의
-function plateauResistance(r: SimResult, tEdge: number, width: number): number {
-	const tMid = tEdge + width / 2;
-	let k = 0;
-	while (k < r.t.length - 1 && r.t[k] < tMid) k++;
-	return r.vApp[k] / r.i[k];
-}
-
-function runSequence(job: SequenceJob, onProgress?: ProgressFn): TransientOutput {
-	const rng = job.variability ? normalRng(job.seed ?? 1) : undefined;
-	const cycles: SimResult[] = [];
-	const summary: CycleSummary[] = [];
-	let x = job.x0;
-	let w = job.w0;
-	const run = (op: PulseOp, p: Params, rs: number): SimResult => {
-		const wf = pulseWaveform(op.v, job.tEdge, op.width, op.width + 2 * job.tEdge);
-		// 스텝 상한: 펄스 golden과 같은 0.1 ns, 긴 펄스는 길이/2000까지 허용
-		const r = simulate(wf, x, w, p, { rs, rsReset: 0, includeCp: true, maxStep: Math.max(0.1e-9, wf.tEnd / 2000), nOut: 801 });
-		x = r.x[r.x.length - 1];
-		w = r.w[r.w.length - 1];
-		return r;
-	};
-	for (let c = 0; c < job.cycles; c++) {
-		const p = job.variability && rng ? sampleCycleParams(job.params, job.variability, rng) : job.params;
-		const parts = [run(job.set, p, job.rs), run(job.read, p, 0), run(job.reset, p, 0), run(job.read, p, 0)];
-		cycles.push(concatResults(parts));
-		summary.push({
-			rLrs: plateauResistance(parts[1], job.tEdge, job.read.width),
-			rEnd: plateauResistance(parts[3], job.tEdge, job.read.width),
-			vSet: NaN,
-			vReset: NaN,
-		});
-		onProgress?.(c + 1, job.cycles);
-	}
-	return { kind: "transient", cycles, summary };
+// SET 동작만 하는 삼각파 0 -> vSet -> 0
+function setRampWaveform(vSet: number, tRamp: number): Waveform {
+	const w = resetRampWaveform(vSet, tRamp);
+	return { ...w, op: () => "set" };
 }
 
 export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
-	if (job.kind === "fixed") return { kind: "fixed", v: Float64Array.from(job.v), i: ivFixedState(job.v, job.x, job.aCf, job.params, job.rs ?? 0) };
-	if (job.kind === "sequence") return runSequence(job, onProgress);
-	const wf = makeWaveform(job.wave);
-	const vRead = job.vRead ?? 0.2;
+	const p = job.params;
+	const gs = job.grid ?? DEFAULT_GRID;
+	if (job.kind === "fixed") {
+		const g = makeGrid(p, gs);
+		const rb = neckProfile(job.rNeck, job.neckLen, p, gs);
+		return {
+			kind: "fixed",
+			v: Float64Array.from(job.v),
+			i: ivFixedState(job.v, rb, p, gs),
+			r01: readResistance(rb, p, V_READ, gs),
+			rb,
+			z: Float64Array.from(g.zc),
+		};
+	}
+	const rStart = readResistance(p.phi0 / 2, p, V_READ, gs);
+	if (job.kind === "pulse") {
+		// SET 펄스는 RESET 스윕 뒤 HRS에서, RESET 펄스는 포밍된 LRS에서 시작
+		let rb0: Float64Array | null = null;
+		let base = 0;
+		if (job.op === "set") {
+			rb0 = simulate(resetRampWaveform(1.6, 0.25), null, p, { grid: gs, onProgress: (f) => onProgress?.(0.5 * f, 1) }).rbEnd;
+			base = 0.5;
+		}
+		const r = simulate(pulseWaveform(job.op, job.v, job.tEdge, job.width), rb0, p, {
+			rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => onProgress?.(base + (1 - base) * f, 1),
+		});
+		const r0 = rb0 ? readResistance(rb0, p, V_READ, gs) : rStart;
+		const r1 = readResistance(r.rbEnd, p, V_READ, gs);
+		const rp = resetPoint(r, false);
+		const isSet = job.op === "set";
+		return {
+			kind: "transient",
+			cycles: [r],
+			summary: [{ rLrs: isSet ? r1 : r0, rHrs: isSet ? r0 : r1, vReset: rp.v, iReset: rp.i, vSet: NaN }],
+			rStart: r0,
+			rEnd: r1,
+		};
+	}
 	const rng = job.variability ? normalRng(job.seed ?? 1) : undefined;
 	const cycles: SimResult[] = [];
 	const summary: CycleSummary[] = [];
-	let x = job.x0;
-	let w = job.w0;
+	let rb: Float64Array | null = null;
 	for (let c = 0; c < job.cycles; c++) {
-		const p = job.variability && rng ? sampleCycleParams(job.params, job.variability, rng) : job.params;
-		const opt: SimOptions = job.variability ? { ...job.opt, rng } : { ...job.opt, noiseDt: undefined };
-		const r = simulate(wf, x, w, p, opt);
-		cycles.push(r);
-		let rLrs = NaN;
-		if (job.wave.kind === "sweep") {
-			// SET 구간 뒤 인가 전압이 0으로 돌아온 시점(t = 2*tRamp)의 상태
-			const tMid = 2 * job.wave.tRamp;
-			let k = 0;
-			while (k < r.t.length - 1 && r.t[k] < tMid) k++;
-			rLrs = readResistance(r.x[k], r.w[k], p, vRead);
+		const pc = job.variability && rng ? sampleCycleParams(p, job.variability, rng) : p;
+		const prog = (f: number): void => onProgress?.(c + f, job.cycles);
+		let r1: SimResult;
+		let r2: SimResult;
+		let vRead = V_READ;
+		if (job.kind === "sweep") {
+			// RESET 반쪽과 SET 반쪽을 따로 돌려 이어 붙인다 (가운데 HRS 상태를 읽기 위해)
+			r1 = simulate(resetRampWaveform(job.vReset, job.tRamp), rb, pc, { grid: gs, onProgress: (f) => prog(0.5 * f) });
+			r2 = simulate(setRampWaveform(job.vSet, job.tRamp), r1.rbEnd, pc, { rs: job.rs, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
+		} else {
+			vRead = job.vRead;
+			r1 = simulate(pulseWaveform("reset", job.reset.v, job.tEdge, job.reset.width), rb, pc, { rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 * f) });
+			r2 = simulate(pulseWaveform("set", job.set.v, job.tEdge, job.set.width), r1.rbEnd, pc, { rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
 		}
-		const sv = switchingVoltage(r, p);
-		x = r.x[r.x.length - 1];
-		w = r.w[r.w.length - 1];
-		summary.push({ rLrs, rEnd: readResistance(x, w, p, vRead), vSet: sv.vSet, vReset: sv.vReset });
+		const rp = resetPoint(r1, false);
+		const rHrs = readResistance(r1.rbEnd, pc, vRead, gs);
+		const rLrs = readResistance(r2.rbEnd, pc, vRead, gs);
+		let vSet = NaN;
+		if (job.kind === "sweep") {
+			// SET 반쪽에서 셀 저항이 처음으로 시작값의 1/10 아래로 떨어지는 전압
+			let r0 = NaN;
+			for (let m = 0; m < r2.t.length; m++) {
+				if (Math.abs(r2.vApp[m]) <= 0.05) continue;
+				const R = Math.abs(r2.vCell[m] / (r2.i[m] === 0 ? 1e-30 : r2.i[m]));
+				if (Number.isNaN(r0)) {
+					r0 = R;
+				} else if (R < r0 / 10) {
+					vSet = r2.vApp[m];
+					break;
+				}
+			}
+		}
+		rb = r2.rbEnd;
+		cycles.push(concatResults([r1, r2]));
+		summary.push({ rLrs, rHrs, vReset: rp.v, iReset: rp.i, vSet });
 		onProgress?.(c + 1, job.cycles);
 	}
-	return { kind: "transient", cycles, summary };
+	return { kind: "transient", cycles, summary, rStart, rEnd: summary[summary.length - 1].rLrs };
 }

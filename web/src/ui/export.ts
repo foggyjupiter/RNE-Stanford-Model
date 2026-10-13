@@ -21,16 +21,16 @@ export function resultCsv(out: JobOutput): string {
 		for (let k = 0; k < out.v.length; k++) rows.push(`${out.v[k]},${out.i[k]}`);
 		return rows.join("\n");
 	}
-	const rows = ["cycle,t_s,v_app_V,v_sw_V,i_A,x_m,w_m,T_K"];
+	const rows = ["cycle,t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"];
 	out.cycles.forEach((r, c) => {
-		for (let k = 0; k < r.t.length; k++) rows.push(`${c + 1},${r.t[k]},${r.vApp[k]},${r.vSw[k]},${r.i[k]},${r.x[k]},${r.w[k]},${r.T[k]}`);
+		for (let k = 0; k < r.t.length; k++) rows.push(`${c + 1},${r.t[k]},${r.vApp[k]},${r.vCell[k]},${r.i[k]},${r.rMin[k]},${r.T[k]}`);
 	});
 	return rows.join("\n");
 }
 
 export function summaryCsv(summary: CycleSummary[]): string {
-	const rows = ["cycle,r_lrs_ohm,r_hrs_ohm,v_set_V,v_reset_V"];
-	summary.forEach((s, c) => rows.push(`${c + 1},${s.rLrs},${s.rEnd},${s.vSet},${s.vReset}`));
+	const rows = ["cycle,r_hrs_ohm,r_lrs_ohm,v_reset_V,i_reset_A,v_set_V"];
+	summary.forEach((s, c) => rows.push(`${c + 1},${s.rHrs},${s.rLrs},${s.vReset},${s.iReset},${s.vSet}`));
 	return rows.join("\n");
 }
 

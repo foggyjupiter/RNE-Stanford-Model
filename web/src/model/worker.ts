@@ -15,9 +15,9 @@ export type WorkerResponse =
 
 function transferables(out: JobOutput): ArrayBuffer[] {
 	if (out.kind === "fixed") return [out.v.buffer as ArrayBuffer, out.i.buffer as ArrayBuffer];
-	const list: ArrayBuffer[] = [];
-	for (const r of out.cycles) for (const a of [r.t, r.vApp, r.vSw, r.i, r.x, r.w, r.T]) list.push(a.buffer as ArrayBuffer);
-	return list;
+	const set = new Set<ArrayBuffer>();	// 같은 버퍼를 두 번 넘기면 오류이므로 중복 제거
+	for (const r of out.cycles) for (const a of [r.t, r.vApp, r.vCell, r.i, r.rMin, r.T]) set.add(a.buffer as ArrayBuffer);
+	return [...set];
 }
 
 self.onmessage = (ev: MessageEvent<WorkerRequest>): void => {

@@ -1,32 +1,32 @@
-"""금속산화물 unipolar RRAM 전도성 필라멘트 모델 (독립 구현).
+"""금속산화물 unipolar RRAM 전도성 필라멘트 모델 (독립 구현, 2차원 원통 좌표).
 
 근거 자료
-	[D] H. Li et al., "Variation-aware, reliability-emphasized design and optimization
-	    of RRAM using SPICE model", DATE 2015, 식 (1)-(11)
-	    → SET(갭 닫힘, 측면 성장), 호핑/옴 전도, 변동성
-	[R] U. Russo et al., "Self-accelerated thermal dissolution model for reset programming
-	    in unipolar RRAM devices", IEEE TED 56(2), 193-200, 2009 (DOI 10.1109/TED.2008.2010584)
-	    → RESET: 열 용해 식 (5), 저항의 온도 의존 식 (4), 열 방정식 식 (2), Table I
+	[R] U. Russo et al., "Self-accelerated thermal dissolution model for reset programming in
+	    unipolar RRAM devices", IEEE TED 56(2), 193-200, 2009 (DOI 10.1109/TED.2008.2010584)
+	    → 전위 식 (1), 열 식 (2), 저항 온도 의존 식 (4), 열 용해 식 (5), 파라미터 Table I, Fig. 4
 	[C] U. Russo et al., "Filament conduction and reset mechanism in NiO-based RRAM devices",
 	    IEEE TED 56(2), 186-192, 2009 (DOI 10.1109/TED.2008.2010583)
-	    → 1차원 열 근사 식 (2),(3), 등가 열저항 식 (6)
-	[M] PKU-Stanford RRAM v2.0Beta Quick User Guide, Table 3 → 파라미터 이름과 기본값
+	    → 등가 열저항 정의 식 (6), SET은 전류 제한, RESET은 전압 스윕
+	[D] H. Li et al., "Variation-aware, reliability-emphasized design and optimization of RRAM
+	    using SPICE model", DATE 2015 → SET 측면 성장 식 (2), 사이클 간 장벽 산포 식 (10),(11)
+	[M] PKU-Stanford RRAM v2.0Beta Quick User Guide, Table 3 → SET 파라미터, RL, CP 기본값
 
-unipolar: SET과 RESET을 같은 극성에서 한다. 어느 쪽 식을 쓸지는 전압 부호가 아니라
-동작(SET = compliance 있음, RESET = compliance 없음)으로 정한다 (A25).
-
-필라멘트는 길이 방향으로 n칸(칸 길이 ≈ a)으로 나누고 칸마다 폭 w_i를 둔다. 온도는 칸마다
-정상 상태 1차원 열 방정식으로 구한다 (시간 적분 없음). RESET에서는 가장 뜨거운 칸이 먼저
-가늘어지고, 거기에 전류가 몰려 더 뜨거워지는 자기 가속이 계산 결과로 나온다 [R].
-
-자료에 없는 내용은 ASSUMPTIONS.md (A1, A2, ...)에 정리했다. 내부 계산은 모두 SI 단위.
+구조
+	- 필라멘트(CF)와 둘레 산화막을 원통 좌표 (r, z) 격자로 나누고, 매 시각 정상 상태
+	  전위·온도를 자기 일관적으로 푼다 ([R] 식 (1)-(4), 시간 적분 없음 [R]).
+	- 상태 변수는 높이 z마다의 CF 경계 반경 r_b(z). RESET에서는 경계 온도로 [R] 식 (5)만큼
+	  안쪽으로, SET에서는 [D] 식 (2)만큼 바깥쪽으로 움직인다.
+	- unipolar: SET과 RESET은 같은 극성. 어느 식을 쓸지는 동작으로 정한다
+	  (SET = compliance 있음: 성장 + 용해, RESET = compliance 없음: 용해만) (A25).
+자료에 없는 내용은 ASSUMPTIONS.md (A#)에 정리했다. 내부 계산은 모두 SI 단위.
 """
 
 import math
-from dataclasses import dataclass, replace, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
-from scipy.integrate import solve_ivp
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 from scipy.optimize import brentq
 
 
@@ -39,258 +39,218 @@ EV = Q_E	# 1 eV [J]
 # --------------------------------------------------------------- 파라미터
 @dataclass(frozen=True)
 class Params:
-	# 매뉴얼 Table 3 (기본값, SI 단위)
-	I0: float = 1e13	# 호핑 전류 밀도 [A/m^2]
-	rho: float = 19.64e-6	# T0에서의 CF 비저항 [ohm*m] (19.64 uOhm*m)
-	a: float = 0.25e-9	# VO 사이 거리 [m]
+	# 소자 형상과 물성: [R] Table I (NiO 소자)
+	L0: float = 160e-9	# 산화막 두께 = CF 길이 [m]
+	phi0: float = 80e-9	# 포밍된 CF 지름 [m]
+	rho_cf: float = 810e-8	# T0에서의 CF 비저항 [ohm*m] (810 uOhm*cm)
+	rho_ox: float = 80e6 * 1e-8	# 산화막 비저항 [ohm*m] (80e6 uOhm*cm)
+	kappa_cf: float = 21.4	# CF 열전도도 [W/(K m)]
+	kappa_ox: float = 20.0	# 산화막 열전도도 [W/(K m)]
+	alpha_T: float = 1.7e-3	# CF 비저항 온도 계수 [1/K], [R] 식 (4)
+	Ed: float = 1.2 * EV	# 열 용해 활성화 에너지 [J], [R] 식 (5)의 Ea
+	vD0: float = 200.0	# 용해 속도 전인자 [m/s], [R] 식 (5) ([R]에서도 피팅값)
+	T0: float = 300.0	# 소자(주변) 온도 [K]
+	R_dom: float = 53.3e-9	# 계산 영역 반경 [m]. [R] Fig. 4 B점(0.78 V에서 530 K)에 맞춘 값 (A31)
+	# SET 측면 성장: [D] 식 (2), 값은 [M] Table 3
+	Ea: float = 0.7 * EV	# VO 평균 활성화 에너지 [J]
+	alpha_a: float = 0.75e-9	# 에너지 증강 계수 [m]
 	f: float = 1e13	# VO 진동 주파수 [Hz]
-	Ea: float = 0.7 * EV	# VO 평균 활성화 에너지 (SET) [J]
-	alpha_a: float = 0.75e-9	# 에너지 증강 계수, VO 생성 [m]
+	dr: float = 0.25e-9	# 측면 성장 단위 Delta_r [m] (A4)
 	Z: float = 1.0	# 전하수 [-]
-	Rth: float = 5e5	# 유효 열저항 [K/W]
-	RH: float = 200e6	# 산화막 기생 저항 [ohm]
+	# 기생 성분: [M] Table 3
 	RL: float = 20.0	# 전극 접촉 저항 [ohm]
 	CP: float = 20e-15	# 전극 기생 정전용량 [F]
-	L0: float = 3e-9	# 스위칭층 두께 [m]
-	WCF: float = 5e-9	# 스위칭층 폭 (CF 폭 최댓값) [m]
-	VT: float = 0.4	# 호핑 특성 전압 [V]
-	T0: float = 300.0	# 주변 온도 [K]
-	deltaGap: float = 4e-5	# 갭 변동 속도, [D] 식 (8)의 delta_g [m/s]
-	deltaCF: float = 1e-4	# CF 폭 변동 속도, [D] 식 (9)의 delta_r [m/s]
-	# Russo [R] Table I (unipolar RESET)
-	Ed: float = 1.2 * EV	# 열 용해 활성화 에너지, [R] 식 (5)의 Ea [J]
-	vD0: float = 200.0	# 용해 속도 전인자, [R] 식 (5) [m/s] ([R]에서도 피팅값)
-	alpha_T: float = 1.7e-3	# CF 비저항 온도 계수, [R] 식 (4) [1/K]
-	# Table 3에 없음 -- 가정
-	gT: float = 0.25e-9	# [D] 식 (6)의 호핑 감쇠 길이 [m], 피팅값 (A3)
-	dr: float = 0.25e-9	# [D] 식 (2)의 측면 성장 단위 Delta_r [m] (A4)
 	# 교수님 요청: 필라멘트 밀도와 셀 면적 (A10)
-	n_f: float = 1e16	# 단위면적당 필라멘트 수 [1/m^2]
-	A_cell: float = 100e-18	# 셀 면적 [m^2] (10 nm x 10 nm)
+	n_f: float = 1e14	# 단위면적당 필라멘트 수 [1/m^2] (A22)
+	A_cell: float = 1e-14	# 셀 면적 [m^2] (100 nm x 100 nm) → N = 1
 
 	@property
 	def N(self):
 		"""병렬로 놓인 동일 필라멘트 수, round(n_f*A_cell) >= 1 (A10)."""
 		return max(1, int(round(self.n_f * self.A_cell)))
 
-	@property
-	def n_cells(self):
-		"""필라멘트 길이 방향 칸 수: 칸 길이가 VO 간격 a에 가장 가깝게, 최소 3칸 (A26)."""
-		return max(3, int(round(self.L0 / self.a)))
-
 
 DEFAULT = Params()
 
-RS_SWEEP = 18e3	# I-V 스윕 SET 동작의 compliance 저항 기본값 [ohm] (A15)
-RS_PULSE = 10e3	# 펄스 SET 동작의 compliance 저항 기본값 [ohm] (A15)
-
-W_MIN = 0.1e-9	# CF 폭 하한 [m]. 이 폭까지 녹은 칸 = 끊어진 필라멘트 (A8, A27)
-EPS_X = 2.5e-12	# 부드러운 벽 / 2단계 전환 혼합 길이, 0.01*a [m] (A7, A8)
-
-# 초기 상태, 매뉴얼 Table 3: x0 ∈ {L0, 0}, w0 ∈ {0.5 nm, WCF}. 모든 칸이 같은 폭에서 시작
-INIT_HRS = (DEFAULT.L0, 0.5e-9)	# 포밍 전 (x0 [m], w0 [m])
-INIT_LRS = (0.0, DEFAULT.WCF)	# RESET 전 (x0 [m], w0 [m])
+RS_SET = 3e3	# SET 동작 compliance 저항 기본값 [ohm] (A15)
 
 
-# ---------------------------------------------------------- 공용
-def _ramp(z):
-	"""z를 [0, 1]로 자른다."""
-	return min(max(z, 0.0), 1.0)
+
+# ---------------------------------------------------------------- 격자
+@dataclass(frozen=True)
+class GridSpec:
+	dr_fine: float = 4e-9	# CF 근처 반경 방향 칸 [m] (A35: 브라우저 계산 속도와의 절충)
+	growth: float = 1.15	# 바깥쪽 칸 증가 비율
+	nz: int = 40	# 길이 방향 칸 수
 
 
-def _exp(z):
-	"""적분기 시도점이 멀리 튈 때 오버플로를 막도록 인자에 상한을 둔 exp."""
-	return math.exp(min(z, 700.0))
-
-
-def cf_area(w):
-	"""CF 단면적 [m^2]. w는 CF *지름* (매뉴얼의 'CF width'), A = pi*w^2/4 (A1)."""
-	return math.pi * w * w / 4.0
-
-
-def cf_width_from_area(A):
-	"""cf_area의 역함수: w = sqrt(4A/pi) [m]."""
-	return math.sqrt(4.0 * A / math.pi)
-
-
-# ---------------------------------------------------------- 전도 + 열 (한 필라멘트)
-def hop_prefactor(x, w_tip, p):
-	"""[D] 식 (6)의 전인자 I0*A*exp(-x/gT) [A]. 갭에 닿은 끝 칸의 폭 w_tip을 쓴다 (A28)."""
-	return p.I0 * cf_area(w_tip) * math.exp(-x / p.gT)
-
-
-def gap_voltage(i, x, w_tip, p):
-	"""[D] 식 (6)의 역함수: 전류 i가 흐를 때 갭 양단 전압 V_gap = VT*asinh(i/pre) [V]."""
-	return p.VT * math.asinh(i / hop_prefactor(x, w_tip, p))
+DEFAULT_GRID = GridSpec()
 
 
 @dataclass
-class Filament:
-	v: float	# 필라멘트 양단 전압 (갭 + CF) [V]
-	i: float	# 필라멘트 전류 [A]
-	r_cf: float	# CF 저항 (온도 반영) [ohm]
-	t_cells: np.ndarray	# 칸별 온도 [K]
-	t_set: float	# SET 식용 온도, [D] 식 (5): T0 + P*Rth [K]
+class Grid:
+	r_faces: np.ndarray	# 반경 방향 셀 경계 [m]
+	z_faces: np.ndarray	# 길이 방향 셀 경계 [m]
+	rc: np.ndarray	# 셀 중심 반경 [m]
+	zc: np.ndarray	# 셀 중심 높이 [m]
 
 
-def thermal_solve(i, x, ws, p):
-	"""전류 i일 때 CF 칸들의 온도 분포와 CF 저항.
+def make_grid(p, gs=DEFAULT_GRID):
+	"""반경: CF 근처(0.75*phi0까지) 균일 dr_fine, 그 밖은 등비로 R_dom까지. 길이: 균일 nz칸."""
+	r_fine = min(0.75 * p.phi0, p.R_dom)
+	faces = list(np.arange(0.0, r_fine + 1e-15, gs.dr_fine))
+	if faces[-1] < r_fine - 1e-15:
+		faces.append(r_fine)
+	d = gs.dr_fine
+	while faces[-1] < p.R_dom - 1e-15:
+		d *= gs.growth
+		faces.append(min(faces[-1] + d, p.R_dom))
+	rf = np.array(faces)
+	zf = np.linspace(0.0, p.L0, gs.nz + 1)
+	return Grid(rf, zf, 0.5 * (rf[:-1] + rf[1:]), 0.5 * (zf[:-1] + zf[1:]))
 
-	[R] 식 (2)(4), [C] 식 (2): -K d^2 theta/dz^2 = I^2 rho0 [1 + alpha_T theta] / A(z), theta = T - T0.
-	양 끝(전극)은 theta = 0 [R]. K = kappa_eq*A = L_CF / (8 Rth): 균일한 필라멘트에서 최고 온도가
-	T0 + P*Rth가 되도록 [C] 식 (6)에서 정한 등가 열 컨덕턴스. 폭과 무관한 상수로 둔다 (A29).
-	격자: 노드 0..n (끝 노드 고정), 칸 k는 노드 k와 k+1 사이. 칸 온도 = 두 노드 평균.
-	열폭주로 해가 없으면 None.
+
+def cf_fraction(g, rb):
+	"""셀별 CF 단면적 비율 (nz, nr). 경계가 걸친 셀은 면적 비율로 섞어 경계 이동이 매끄럽게 (A30)."""
+	r0 = g.r_faces[:-1][None, :]
+	r1 = g.r_faces[1:][None, :]
+	f = (rb[:, None] ** 2 - r0 ** 2) / (r1 ** 2 - r0 ** 2)
+	return np.clip(f, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------- 정상 상태 전위·온도
+def _assemble(g, k):
+	"""-div(k grad u) 유한체적 행렬. 위/아래 전극(z)은 Dirichlet, 축과 옆면(r)은 Neumann [R].
+
+	반환: (A, G_top, G_bot, Gr, Gz). G_top/G_bot: 끝 셀과 전극 사이 컨덕턴스,
+	Gr/Gz: 반경/길이 방향 면 컨덕턴스.
 	"""
-	n = len(ws)
-	L = p.L0 - x
-	if L <= 1e-15:
-		return np.zeros(n), 0.0
-	h = L / n
-	K = L / (8.0 * p.Rth)	# [W*m/K]
-	areas = np.array([cf_area(w) for w in ws])
-	c = i * i * p.rho / areas	# 칸별 단위 길이당 기준 발열 [W/m]
-	a = p.alpha_T
-	if n == 1:
-		theta = np.zeros(2)
-	else:
-		m = n - 1	# 내부 노드 수
-		kh = K / (h * h)
-		lower = np.empty(m)
-		diag = np.empty(m)
-		upper = np.empty(m)
-		rhs = np.empty(m)
-		for j in range(1, n):
-			cl = c[j - 1]
-			cr = c[j]
-			diag[j - 1] = 2.0 * kh - a * (cl + cr) / 4.0
-			lower[j - 1] = -kh - a * cl / 4.0
-			upper[j - 1] = -kh - a * cr / 4.0
-			rhs[j - 1] = (cl + cr) / 2.0
-		# Thomas 알고리즘
-		for j in range(1, m):
-			if diag[j - 1] == 0.0:
-				return None
-			f = lower[j] / diag[j - 1]
-			diag[j] -= f * upper[j - 1]
-			rhs[j] -= f * rhs[j - 1]
-		inner = np.empty(m)
-		if diag[m - 1] == 0.0:
-			return None
-		inner[m - 1] = rhs[m - 1] / diag[m - 1]
-		for j in range(m - 2, -1, -1):
-			inner[j] = (rhs[j] - upper[j] * inner[j + 1]) / diag[j]
-		if not np.all(np.isfinite(inner)) or np.any(inner < 0.0):
-			return None	# 열폭주 (전류가 너무 큼)
-		theta = np.concatenate([[0.0], inner, [0.0]])
-	t_cells = 0.5 * (theta[:-1] + theta[1:])
-	r_cf = float(np.sum(p.rho * (1.0 + a * t_cells) * h / areas))
-	return t_cells, r_cf
+	nz, nr = k.shape
+	rf = g.r_faces
+	dz = np.diff(g.z_faces)
+	ring = math.pi * (rf[1:] ** 2 - rf[:-1] ** 2)
+	h_in = rf[1:-1] - g.rc[:-1]
+	h_out = g.rc[1:] - rf[1:-1]
+	area_r = 2 * math.pi * rf[1:-1][None, :] * dz[:, None]
+	Gr = area_r / (h_in[None, :] / k[:, :-1] + h_out[None, :] / k[:, 1:])
+	Gz = ring[None, :] / (0.5 * dz[:-1, None] / k[:-1, :] + 0.5 * dz[1:, None] / k[1:, :])
+	G_bot = ring * k[0, :] / (0.5 * dz[0])
+	G_top = ring * k[-1, :] / (0.5 * dz[-1])
+	idx = np.arange(nz * nr).reshape(nz, nr)
+	diag = np.zeros((nz, nr))
+	diag[:, :-1] += Gr
+	diag[:, 1:] += Gr
+	diag[:-1, :] += Gz
+	diag[1:, :] += Gz
+	diag[0, :] += G_bot
+	diag[-1, :] += G_top
+	rows = np.concatenate([idx[:, :-1].ravel(), idx[:, 1:].ravel(), idx[:-1, :].ravel(), idx[1:, :].ravel(), idx.ravel()])
+	cols = np.concatenate([idx[:, 1:].ravel(), idx[:, :-1].ravel(), idx[1:, :].ravel(), idx[:-1, :].ravel(), idx.ravel()])
+	vals = np.concatenate([-Gr.ravel(), -Gr.ravel(), -Gz.ravel(), -Gz.ravel(), diag.ravel()])
+	A = sp.csc_matrix((vals, (rows, cols)), shape=(nz * nr, nz * nr))
+	return A, G_top, G_bot, Gr, Gz
 
 
-def filament_at_current(i, x, ws, p):
-	"""전류 i (>= 0)에서 필라멘트 전압과 온도. 열폭주면 None."""
-	sol = thermal_solve(i, x, ws, p)
-	if sol is None:
-		return None
-	t_cells, r_cf = sol
-	v = gap_voltage(i, x, ws[-1], p) + i * r_cf
-	return Filament(v, i, r_cf, p.T0 + t_cells, p.T0 + i * v * p.Rth)
+@dataclass
+class Fields:
+	V: np.ndarray	# 전위 (nz, nr) [V]
+	T: np.ndarray	# 온도 (nz, nr) [K]
+	I: float	# 필라멘트 1개 전류 [A]
+	P: float	# 소비 전력 [W]
 
 
-def _current_upper(v, x, ws, p, r_series):
-	"""전류 상한: 직렬 저항만 있을 때, 갭만 있을 때, 차가운 CF만 있을 때 중 가장 작은 값."""
-	bounds = []
-	if r_series > 0.0:
-		bounds.append(v / r_series)
-	bounds.append(hop_prefactor(x, ws[-1], p) * math.sinh(min(v / p.VT, 700.0)))
-	L = p.L0 - x
-	if L > 1e-15:
-		r_cold = sum(p.rho * (L / len(ws)) / cf_area(w) for w in ws)
-		bounds.append(v / r_cold)
-	return min(bounds)
+class FieldSolver:
+	"""한 CF 형상(rb)에 대해 정상 상태 전위·온도를 푸는 도우미. 열 행렬 분해를 재사용한다."""
+
+	def __init__(self, g, p, rb):
+		self.g = g
+		self.p = p
+		self.f = cf_fraction(g, rb)
+		kappa = self.f * p.kappa_cf + (1 - self.f) * p.kappa_ox
+		A, self.Gt_th, self.Gb_th, _, _ = _assemble(g, kappa)
+		self.lu_th = spla.splu(A)
+		self.T_last = None
+
+	def solve(self, v, tol=0.05, max_iter=80, relax=0.7):
+		"""셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭."""
+		g, p, f = self.g, self.p, self.f
+		nz, nr = f.shape
+		s = 1.0 if v >= 0 else -1.0
+		va = abs(v)
+		T = self.T_last.copy() if self.T_last is not None else np.full((nz, nr), p.T0)
+		for it in range(max_iter):
+			rho = p.rho_cf * (1 + p.alpha_T * (T - p.T0))
+			sigma = f / rho + (1 - f) / p.rho_ox
+			A_e, Gt_e, Gb_e, Gr_e, Gz_e = _assemble(g, sigma)
+			b = np.zeros(nz * nr)
+			b[(nz - 1) * nr:] = Gt_e * va
+			V = spla.spsolve(A_e, b).reshape(nz, nr)
+			# 줄 발열: 면 컨덕턴스 G*dV^2를 양쪽 셀에 반씩 (총합 = I*V)
+			q = np.zeros((nz, nr))
+			pr = Gr_e * (V[:, 1:] - V[:, :-1]) ** 2
+			q[:, :-1] += 0.5 * pr
+			q[:, 1:] += 0.5 * pr
+			pz = Gz_e * (V[1:, :] - V[:-1, :]) ** 2
+			q[:-1, :] += 0.5 * pz
+			q[1:, :] += 0.5 * pz
+			q[0, :] += Gb_e * V[0, :] ** 2
+			q[-1, :] += Gt_e * (va - V[-1, :]) ** 2
+			bt = q.copy()
+			bt[0, :] += self.Gb_th * p.T0
+			bt[-1, :] += self.Gt_th * p.T0
+			T_new = self.lu_th.solve(bt.ravel()).reshape(nz, nr)
+			dT = float(np.max(np.abs(T_new - T)))
+			T = T_new if it == 0 else T + relax * (T_new - T)
+			if dT < tol:
+				break
+		self.T_last = T
+		I = float(np.sum(Gt_e * (va - V[-1, :])))
+		return Fields(s * V, T, s * I, float(q.sum()))
 
 
-def solve_filament(v_app, x, ws, p, r_series):
-	"""v_app = V_sw + (N*I + V_sw/RH)*r_series, V_sw = V_f(I)를 I에 대해 푼다 (부호 대칭).
-
-	r_series = RL + Rs (CP를 무시할 때) 또는 0 (V_sw를 직접 줄 때).
-	(V_sw [V], Filament)를 반환. V_f(I)는 I에 대해 단조 증가 (alpha_T >= 0).
-	"""
-	s = 1.0 if v_app >= 0 else -1.0
-	va = abs(v_app)
-	if va == 0.0:
-		t0 = np.full(len(ws), p.T0)
-		return 0.0, Filament(0.0, 0.0, thermal_solve(0.0, x, ws, p)[1], t0, p.T0)
-	big = 1e30
-
-	def g(i):
-		fil = filament_at_current(i, x, ws, p)
-		if fil is None:
-			return big
-		return fil.v + (p.N * i + fil.v / p.RH) * r_series - va
-
-	hi = _current_upper(va, x, ws, p, r_series)
-	i = brentq(g, 0.0, hi, xtol=1e-18, rtol=1e-12)
-	fil = filament_at_current(i, x, ws, p)
-	fil.v *= s
-	fil.i *= s
-	return fil.v, fil
+def boundary_values(g, fld, rb):
+	"""각 높이에서 CF 경계(r = rb)의 온도와 길이 방향 전계 크기 [K], [V/m]."""
+	nz = len(rb)
+	Tb = np.empty(nz)
+	Eb = np.empty(nz)
+	dz = np.diff(g.zc)
+	V = np.abs(fld.V)
+	for j in range(nz):
+		Tb[j] = np.interp(rb[j], g.rc, fld.T[j])
+		vj = np.interp(rb[j], g.rc, V[j])
+		up = np.interp(rb[j], g.rc, V[min(j + 1, nz - 1)])
+		dn = np.interp(rb[j], g.rc, V[max(j - 1, 0)])
+		span = (g.zc[min(j + 1, nz - 1)] - g.zc[max(j - 1, 0)])
+		Eb[j] = abs(up - dn) / span if span > 0 else 0.0
+	return Tb, Eb
 
 
-# ---------------------------------------------------------- 변화율
-def rate_set_gap(v, T, p):
-	"""[D] 식 (1): SET 중 dg/dt의 크기 [m/s]. 전계 E = |V|/L0 (A5)."""
-	E = abs(v) / p.L0
-	return p.a * p.f * _exp(-(p.Ea - p.alpha_a * p.Z * Q_E * E) / (K_B * T))
-
-
-def rate_set_width(v, w, T, p):
-	"""[D] 식 (2): SET 중 dr/dt, r = w/2 [m/s]."""
-	E = abs(v) / p.L0
-	r = max(w / 2.0, 1e-12)
-	pref = p.dr + p.dr * p.dr / (2.0 * r)
-	return pref * p.f * _exp(-(p.Ea - p.alpha_a * p.Z * Q_E * E) / (K_B * T))
-
-
+# ---------------------------------------------------------------- 경계 이동 속도
 def rate_dissolve(T, p):
-	"""[R] 식 (5): 열 용해로 CF 경계가 축 쪽으로 움직이는 속도 v_D = vD0*exp(-Ed/kT) [m/s]."""
-	return p.vD0 * _exp(-p.Ed / (K_B * T))
+	"""[R] 식 (5): 열 용해로 CF 경계가 축 쪽으로 움직이는 속도 v_D [m/s]."""
+	return p.vD0 * np.exp(-p.Ed / (K_B * T))
 
 
-def state_rates(op, v_sw, x, ws, p, chi_g=0.0, chi_r=0.0, fil=None):
-	"""(dx/dt, dw_i/dt 배열, Filament)를 반환.
+def rate_grow(r, E, T, p):
+	"""[D] 식 (2): SET 중 CF 경계가 바깥쪽으로 움직이는 속도 dr/dt [m/s].
 
-	op = "set":   [D] 식 (1),(2) 성장 (2단계, A7) + [R] 식 (5) 용해
-	op = "reset": [R] 식 (5) 용해만 (A25)
-	용해는 칸마다 그 칸의 온도로 계산한다 [R]. 성장은 [D] 식 (5)의 온도를 쓴다.
-	chi_g, chi_r: [D] 식 (8),(9)의 잡음 (모든 칸에 같은 chi_r).
+	전계 E는 경계 위치의 국소 길이 방향 전계 (2차원 계산에서 얻음, A33).
+	Delta_r^2/(2r)이 r -> 0에서 발산하지 않도록 r은 Delta_r/2 이상으로 둔다 (A32).
 	"""
-	n = len(ws)
-	xc = min(max(x, 0.0), p.L0)
-	wc = np.clip(ws, W_MIN, p.WCF)
-	if fil is None:
-		_, fil = solve_filament(v_sw, xc, wc, p, 0.0)
-	dw = np.empty(n)
-	dx = 0.0
-	for k in range(n):
-		dw[k] = -2.0 * rate_dissolve(fil.t_cells[k], p)	# w는 지름이므로 2배
-	if op == "set" and v_sw != 0.0:
-		s_gap = _ramp(x / EPS_X)
-		dx = -rate_set_gap(v_sw, fil.t_set, p)
-		for k in range(n):
-			dw[k] += 2.0 * rate_set_width(v_sw, wc[k], fil.t_set, p) * (1.0 - s_gap)
-	# [D] 식 (8),(9): 변화율에 더해지는 잡음
-	dx += p.deltaGap * chi_g
-	dw += 2.0 * p.deltaCF * chi_r
-	# 부드러운 벽으로 x를 [0, L0], w를 [W_MIN, WCF]에 가둔다 (A8)
-	dx *= _ramp(x / EPS_X) if dx < 0.0 else _ramp((p.L0 - x) / EPS_X)
-	for k in range(n):
-		if dw[k] < 0.0:
-			dw[k] *= _ramp((ws[k] - W_MIN) / EPS_X)
-		else:
-			dw[k] *= _ramp((p.WCF - ws[k]) / EPS_X)
-	return dx, dw, fil
+	re = np.maximum(r, 0.5 * p.dr)
+	pref = p.dr + p.dr * p.dr / (2.0 * re)
+	return pref * p.f * np.exp(-(p.Ea - p.alpha_a * p.Z * Q_E * E) / (K_B * T))
+
+
+def boundary_velocity(op, rb, g, fld, p):
+	"""경계 반경의 시간 변화율 [m/s]. op = "set" (성장 + 용해) | "reset" (용해만) (A25)."""
+	Tb, Eb = boundary_values(g, fld, rb)
+	vel = -np.where(rb > 0.0, rate_dissolve(Tb, p), 0.0)
+	if op == "set":
+		vel = vel + rate_grow(rb, Eb, Tb, p)
+	# 영역 밖으로는 자라지 않는다
+	vel = np.where((rb >= 0.98 * p.R_dom) & (vel > 0), 0.0, vel)
+	return vel
 
 
 # ---------------------------------------------------------------- 파형
@@ -306,18 +266,20 @@ def _interp(ts, vs):
 	return lambda t: float(np.interp(t, ts, vs))
 
 
-def sweep_waveform(v_set=2.5, v_reset=2.0, t_ramp=100e-6):
-	"""unipolar 스윕: 0 -> v_set -> 0 (SET 동작) -> v_reset -> 0 (RESET 동작), 구간마다 t_ramp."""
+def sweep_waveform(v_reset=1.5, v_set=3.0, t_ramp=0.25):
+	"""unipolar 스윕: 0 -> v_reset -> 0 (RESET 동작) -> v_set -> 0 (SET 동작), 구간마다 t_ramp [s].
+
+	포밍된 LRS에서 시작하므로 RESET을 먼저 한다. 기본 램프는 [R] Fig. 3의 4 V/s 근처.
+	"""
 	ts = np.array([0.0, 1, 2, 3, 4]) * t_ramp
-	vs = np.array([0.0, v_set, 0.0, v_reset, 0.0])
-	return Waveform(_interp(ts, vs), lambda t: "set" if t < 2 * t_ramp else "reset", ts[-1], ts)
+	vs = np.array([0.0, v_reset, 0.0, v_set, 0.0])
+	return Waveform(_interp(ts, vs), lambda t: "reset" if t < 2 * t_ramp else "set", ts[-1], ts)
 
 
-def pulse_waveform(op, v_pulse=2.0, t_edge=10e-9, t_width=80e-9, t_total=None):
-	"""사다리꼴 펄스 하나 (지연 0, 상승=하강=t_edge). op = "set" | "reset"."""
-	t_tot = t_total if t_total is not None else t_width + 2 * t_edge
-	ts = np.array([0.0, t_edge, t_edge + t_width, 2 * t_edge + t_width, max(t_tot, 2 * t_edge + t_width)])
-	vs = np.array([0.0, v_pulse, v_pulse, 0.0, 0.0])
+def pulse_waveform(op, v_pulse, t_edge=10e-9, t_width=1e-6):
+	"""사다리꼴 펄스 하나 (지연 0, 상승 = 하강 = t_edge). op = "set" | "reset"."""
+	ts = np.array([0.0, t_edge, t_edge + t_width, 2 * t_edge + t_width])
+	vs = np.array([0.0, v_pulse, v_pulse, 0.0])
 	return Waveform(_interp(ts, vs), lambda t: op, ts[-1], ts)
 
 
@@ -326,138 +288,145 @@ def series_r(op, Rs, Rs_reset):
 	return Rs if op == "set" else Rs_reset
 
 
+# ---------------------------------------------------------------- 셀 전압 풀이
+def solve_cell(fs, p, v_app, r_ser, cp=0.0, dt=0.0, v_prev=0.0):
+	"""인가 전압과 셀 전압 V_c 사이의 회로 방정식을 V_c에 대해 푼다.
+
+	(v_app - V_c)/r_ser = N*I(V_c) + CP*(V_c - v_prev)/dt   (CP 항은 후진 Euler, A11)
+	r_ser = RL + Rs. 반환: (V_c, Fields).
+	"""
+	c = cp / dt if (cp > 0 and dt > 0) else 0.0
+	if v_app == 0.0 and c == 0.0:
+		return 0.0, fs.solve(0.0)
+
+	def g(vc):
+		return (v_app - vc) / r_ser - p.N * fs.solve(vc).I - c * (vc - v_prev)
+
+	lo, hi = sorted([0.0, v_app] + ([v_prev] if c > 0 else []))[0], sorted([0.0, v_app] + ([v_prev] if c > 0 else []))[-1]
+	if hi - lo < 1e-15:
+		return lo, fs.solve(lo)
+	vc = brentq(g, lo, hi, xtol=1e-7, rtol=1e-9)
+	return vc, fs.solve(vc)
+
+
 # ---------------------------------------------------------------- 시뮬레이터
 @dataclass
 class Result:
 	t: np.ndarray	# 시간 [s]
 	v_app: np.ndarray	# 인가 전압 [V]
-	v_sw: np.ndarray	# 스위칭 노드 전압 [V]
+	v_cell: np.ndarray	# 셀(필라멘트) 양단 전압 [V]
 	i: np.ndarray	# 단자 전류 [A]
-	x: np.ndarray	# 갭 길이 [m]
-	w: np.ndarray	# 가장 가는 칸의 폭 (병목) [m]
-	w_mean: np.ndarray	# 칸 폭 평균 [m]
-	T: np.ndarray	# 가장 뜨거운 칸의 온도 [K]
-	w_cells: np.ndarray	# 마지막 시점의 칸별 폭 [m]
+	r_min: np.ndarray	# 가장 가는 곳의 CF 반경 [m]
+	T: np.ndarray	# 최고 온도 [K]
+	rb_end: np.ndarray	# 마지막 CF 경계 반경 r_b(z) [m]
+	snapshots: list = field(default_factory=list)	# (t, v_app, rb, T) 몇 장
 	info: dict = field(default_factory=dict)
 
 	def table(self):
-		return np.column_stack([self.t, self.v_app, self.v_sw, self.i, self.x, self.w, self.w_mean, self.T])
+		return np.column_stack([self.t, self.v_app, self.v_cell, self.i, self.r_min, self.T])
 
 
-CSV_HEADER = "t_s,v_app_V,v_sw_V,i_A,x_m,w_min_m,w_mean_m,T_max_K"
+CSV_HEADER = "t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"
 
 
-def simulate(wf, x0, w0, p=DEFAULT, Rs=0.0, Rs_reset=0.0, include_cp=False,
-		n_out=2001, max_step=None, rtol=1e-6, noise_dt=None, rng=None):
-	"""상태 방정식을 BDF로 적분한다. 상태 = [x, w_1..w_n] (+ V_sw).
+def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, include_cp=False,
+		dv_max=1e-2, drb_max=None, n_snap=0):
+	"""CF 경계를 시간에 따라 움직이며 응답을 계산한다.
 
-	w0: 스칼라면 모든 칸이 같은 폭, 배열이면 칸별 폭.
-	include_cp=False: CP 무시, 우변을 계산할 때마다 V_sw를 대수적으로 푼다 (A11).
-	include_cp=True : V_sw가 상태 변수, CP*dV_sw/dt = (v_app - V_sw)/(RL+Rs) - I_cell.
-	noise_dt: [D] 식 (8),(9)의 계단형 chi(t) 유지 시간 (A12). None이면 잡음 없음.
+	rb0: 초기 경계 반경 (스칼라 또는 높이별 배열). None이면 포밍된 CF (phi0/2).
+	시간 적분: 경계 이동은 명시적 Euler + 적응 스텝 (A34):
+		한 스텝에서 전압 변화 <= dv_max, 경계 이동 <= drb_max (기본: 반경 격자의 1/4).
+	include_cp: CP를 후진 Euler로 포함 (펄스용).
+	n_snap: 등간격 시각에 (rb, T) 스냅숏 저장 개수.
 	"""
-	n = p.n_cells
-	ws0 = np.full(n, w0) if np.isscalar(w0) else np.asarray(w0, dtype=float)
-	if len(ws0) != n:
-		raise ValueError(f"w0 길이 {len(ws0)} != 칸 수 {n}")
-	if max_step is None:
-		max_step = wf.t_end / 2000
-	bps = [0.0, wf.t_end] + [float(c) for c in wf.corners if 0.0 < c < wf.t_end]
-	chi = None
-	if noise_dt is not None:
-		rng = rng if rng is not None else np.random.default_rng()
-		n_chi = int(math.ceil(wf.t_end / noise_dt))
-		chi = rng.standard_normal((n_chi, 2))
-		bps.extend(k * noise_dt for k in range(1, n_chi))
-	bps = np.unique(np.array(bps))
-	cur = [0.0, 0.0]
-
-	def r_ser(t):
-		return p.RL + series_r(wf.op(t), Rs, Rs_reset)
-
-	if include_cp:
-		def rhs(t, y):
-			vs = y[n + 1]
-			op = wf.op(t)
-			dx, dw, fil = state_rates(op, vs, y[0], y[1:n + 1], p, cur[0], cur[1])
-			i_cell = p.N * fil.i + vs / p.RH
-			dv = ((wf.v(t) - vs) / r_ser(t) - i_cell) / p.CP
-			return np.concatenate([[dx], dw, [dv]])
-		y = np.concatenate([[x0], ws0, [0.0]])
-		atol = np.concatenate([[1e-14], np.full(n, 1e-14), [1e-7]])
+	g = make_grid(p, gs)
+	nz = len(g.zc)
+	if rb0 is None:
+		rb = np.full(nz, p.phi0 / 2)
+	elif np.isscalar(rb0):
+		rb = np.full(nz, float(rb0))
 	else:
-		def rhs(t, y):
-			xc = min(max(y[0], 0.0), p.L0)
-			wc = np.clip(y[1:], W_MIN, p.WCF)
-			_, fil = solve_filament(wf.v(t), xc, wc, p, r_ser(t))
-			dx, dw, _ = state_rates(wf.op(t), fil.v, y[0], y[1:], p, cur[0], cur[1], fil=fil)
-			return np.concatenate([[dx], dw])
-		y = np.concatenate([[x0], ws0])
-		atol = np.concatenate([[1e-14], np.full(n, 1e-14)])
-
-	t_eval = np.unique(np.concatenate([np.linspace(0.0, wf.t_end, n_out), bps]))
-	ts = [np.array([0.0])]
-	ys = [y[:, None]]
-	nfev = 0
-	for k in range(len(bps) - 1):
-		t_a, t_b = bps[k], bps[k + 1]
-		if chi is not None:
-			cur[0], cur[1] = chi[min(int((t_a + t_b) / 2 / noise_dt), len(chi) - 1)]
-		te = t_eval[(t_eval > t_a) & (t_eval <= t_b)]
-		sol = solve_ivp(rhs, (t_a, t_b), y, method="BDF", t_eval=te,
-				max_step=max_step, rtol=rtol, atol=atol)
-		if not sol.success:
-			raise RuntimeError(f"solve_ivp failed on [{t_a:.3e}, {t_b:.3e}] s: {sol.message}")
-		nfev += sol.nfev
-		y = sol.y[:, -1].copy()
-		y[0] = min(max(y[0], 0.0), p.L0)
-		y[1:n + 1] = np.clip(y[1:n + 1], W_MIN, p.WCF)
-		ts.append(sol.t)
-		ys.append(sol.y)
-	t_all = np.concatenate(ts)
-	y_all = np.concatenate(ys, axis=1)
-
-	m = t_all.size
-	out = {k: np.empty(m) for k in ("v_app", "v_sw", "i", "x", "w", "w_mean", "T")}
-	for k in range(m):
-		t = t_all[k]
+		rb = np.array(rb0, dtype=float)
+	drb_max = drb_max if drb_max is not None else gs.dr_fine / 4
+	corners = sorted(set(float(c) for c in wf.corners if 0 < c < wf.t_end))
+	snap_times = list(np.linspace(0, wf.t_end, n_snap)) if n_snap else []
+	t = 0.0
+	vc = 0.0
+	T_prev = None
+	out = {k: [] for k in ("t", "v_app", "v_cell", "i", "r_min", "T")}
+	snaps = []
+	dt = 0.0
+	while True:
 		va = wf.v(t)
-		xk = min(max(y_all[0, k], 0.0), p.L0)
-		wk = np.clip(y_all[1:n + 1, k], W_MIN, p.WCF)
-		if include_cp:
-			vs = y_all[n + 1, k]
-			_, fil = solve_filament(vs, xk, wk, p, 0.0)
-			ik = (va - vs) / r_ser(t)	# 단자 전류, CP 충전 전류 포함
-		else:
-			vs, fil = solve_filament(va, xk, wk, p, r_ser(t))
-			ik = p.N * fil.i + vs / p.RH
-		out["v_app"][k] = va
-		out["v_sw"][k] = vs
-		out["i"][k] = ik
-		out["x"][k] = xk
-		out["w"][k] = wk.min()
-		out["w_mean"][k] = wk.mean()
-		out["T"][k] = max(fil.t_cells.max(), fil.t_set) if p.L0 - xk > 1e-15 else fil.t_set
-	w_last = np.clip(y_all[1:n + 1, -1], W_MIN, p.WCF)
-	return Result(t_all, out["v_app"], out["v_sw"], out["i"], out["x"], out["w"], out["w_mean"], out["T"],
-			w_last, {"nfev": nfev, "N": p.N, "n_cells": n})
+		op = wf.op(min(t, wf.t_end * (1 - 1e-12)))
+		r_ser = p.RL + series_r(op, Rs, Rs_reset)
+		fs = FieldSolver(g, p, rb)
+		fs.T_last = T_prev
+		vc_new, fld = solve_cell(fs, p, va, r_ser, p.CP if include_cp else 0.0, dt, vc)
+		vc = vc_new
+		T_prev = fld.T
+		i_term = (va - vc) / r_ser
+		out["t"].append(t)
+		out["v_app"].append(va)
+		out["v_cell"].append(vc)
+		out["i"].append(i_term)
+		out["r_min"].append(float(rb.min()))
+		out["T"].append(float(fld.T.max()))
+		while snap_times and t >= snap_times[0] - 1e-15:
+			snaps.append((t, va, rb.copy(), fld.T.copy()))
+			snap_times.pop(0)
+		if t >= wf.t_end:
+			break
+		vel = boundary_velocity(op, rb, g, fld, p)
+		lims = [wf.t_end - t]
+		vm = float(np.max(np.abs(vel)))
+		if vm > 0:
+			lims.append(drb_max / vm)
+		slope = abs(wf.v(t + 1e-12 * max(wf.t_end, 1e-9)) - va) / (1e-12 * max(wf.t_end, 1e-9))
+		if slope > 0:
+			lims.append(dv_max / slope)
+		nxt = [c for c in corners if c > t + 1e-18]
+		if nxt:
+			lims.append(nxt[0] - t)	# 파형 꺾임점을 정확히 지난다
+		dt = max(min(lims), 1e-15)
+		rb = np.clip(rb + vel * dt, 0.0, p.R_dom)
+		t = min(t + dt, wf.t_end)
+	res = Result(*(np.array(out[k]) for k in ("t", "v_app", "v_cell", "i", "r_min", "T")), rb.copy(), snaps,
+			{"steps": len(out["t"]), "z": g.zc.copy(), "r": g.rc.copy()})
+	return res
 
 
-# ---------------------------------------------------------- 읽기 / 고정 상태
-def read_resistance(x, ws, p=DEFAULT, v_read=0.2):
-	"""v_read에서의 셀 저항 (RL, RH 포함, 스위칭 없음) [ohm]. ws: 스칼라 또는 칸별 폭."""
-	wv = np.full(p.n_cells, ws) if np.isscalar(ws) else np.asarray(ws, dtype=float)
-	v_sw, fil = solve_filament(v_read, x, wv, p, p.RL)
-	return v_read / (p.N * fil.i + v_sw / p.RH)
+# ---------------------------------------------------------------- 읽기 / 고정 상태
+def read_resistance(rb, p=DEFAULT, gs=DEFAULT_GRID, v_read=0.1):
+	"""v_read에서의 셀 저항 (RL 포함, 스위칭 없음) [ohm]. rb: 스칼라 또는 높이별 반경.
+
+	읽기 전압 0.1 V는 [C] Fig. 3의 저항 측정 조건(100 mV 기울기)을 따른다.
+	"""
+	g = make_grid(p, gs)
+	rbv = np.full(len(g.zc), rb) if np.isscalar(rb) else np.asarray(rb, dtype=float)
+	fs = FieldSolver(g, p, rbv)
+	vc, fld = solve_cell(fs, p, v_read, p.RL)
+	return v_read / (p.N * fld.I)
 
 
-def iv_fixed_state(v, x, A_cf, p=DEFAULT, Rs=0.0):
-	"""고정 상태 모드: 갭 x [m], 모든 칸이 같은 CF 면적 A_cf [m^2]일 때의 정적 I-V. 스위칭 없음."""
-	wv = np.full(p.n_cells, cf_width_from_area(A_cf))
+def neck_profile(r_neck, length, p=DEFAULT, gs=DEFAULT_GRID):
+	"""고정 상태 모드용 CF 형상: 가운데 길이 `length` 구간만 반경 r_neck, 나머지는 phi0/2."""
+	g = make_grid(p, gs)
+	rb = np.full(len(g.zc), p.phi0 / 2)
+	mid = p.L0 / 2
+	rb[np.abs(g.zc - mid) <= length / 2] = r_neck
+	return rb
+
+
+def iv_fixed_state(v, rb, p=DEFAULT, gs=DEFAULT_GRID):
+	"""고정 상태 모드: 주어진 CF 형상 rb에서의 정적 I-V (RL 포함, 스위칭 없음)."""
+	g = make_grid(p, gs)
+	rbv = np.full(len(g.zc), rb) if np.isscalar(rb) else np.asarray(rb, dtype=float)
+	fs = FieldSolver(g, p, rbv)
 	out = np.empty(len(v))
 	for k, vk in enumerate(v):
-		vs, fil = solve_filament(float(vk), x, wv, p, p.RL + Rs)
-		out[k] = p.N * fil.i + vs / p.RH
+		vc, fld = solve_cell(fs, p, float(vk), p.RL)
+		out[k] = p.N * fld.I
 	return out
 
 
@@ -469,32 +438,27 @@ class Variability:
 
 
 def sample_cycle_params(p, var, rng):
-	"""[D] 식 (10),(11): 한 사이클의 SET/RESET 에너지 장벽을 몬테카를로로 뽑는다.
-
-	[D]의 (11)은 bipolar RESET 장벽(Ei, Eh)에 대한 것이다. unipolar에서는 RESET 장벽이 Ed이므로
-	같은 방식으로 Ed에 적용한다 (A13).
-	"""
+	"""[D] 식 (10),(11): 한 사이클의 SET/RESET 장벽을 몬테카를로로 뽑는다 (RESET 장벽은 Ed, A13)."""
 	return replace(p,
 		Ea=p.Ea + var.sigma_Ea * rng.standard_normal(),
 		Ed=p.Ed + var.sigma_Ed * rng.standard_normal())
 
 
-def switching_voltage(res, p=DEFAULT):
-	"""스윕의 스위칭 전압 (진단용). (V_set, V_reset) [V] 또는 nan을 반환.
+# ---------------------------------------------------------- 진단
+def reset_point(res):
+	"""RESET 구간에서 |I|가 최대인 (V_reset [V], I_reset [A]). 그 뒤 전류가 무너진다."""
+	half = res.t[-1] / 2 if res.t[-1] > 0 else 0
+	idx = np.arange(len(res.t)) if half == 0 else np.where(res.t <= half)[0]
+	k = idx[np.argmax(np.abs(res.i[idx]))]
+	return res.v_app[k], res.i[k]
 
-	V_set  : SET 구간에서 R(=V/I)이 처음으로 시작값의 1/10 아래로 떨어지는 인가 전압.
-	V_reset: RESET 구간에서 |I|가 최대인 인가 전압 (그 뒤 전류가 무너지는 지점).
-	"""
-	n = len(res.t)
+
+def set_point(res, p=DEFAULT):
+	"""SET 구간에서 셀 저항이 처음으로 구간 시작값의 1/10 아래로 떨어지는 인가 전압 [V]."""
 	half = res.t[-1] / 2
-	i = np.abs(res.i)
-	set_idx = np.where((res.t <= half) & (res.v_app > 0.05))[0]
-	v_set = np.nan
-	if set_idx.size:
-		r = res.v_app[set_idx] / np.maximum(i[set_idx], 1e-30)
-		hit = np.where(r < r[0] / 10)[0]
-		if hit.size:
-			v_set = res.v_app[set_idx[hit[0]]]
-	reset_idx = np.where(res.t > half)[0]
-	v_reset = res.v_app[reset_idx[np.argmax(i[reset_idx])]] if reset_idx.size else np.nan
-	return v_set, v_reset
+	idx = np.where((res.t > half) & (np.abs(res.v_app) > 0.05))[0]
+	if idx.size == 0:
+		return np.nan
+	r = np.abs(res.v_cell[idx] / np.where(res.i[idx] == 0, 1e-30, res.i[idx]))
+	hit = np.where(r < r[0] / 10)[0]
+	return res.v_app[idx[hit[0]]] if hit.size else np.nan
