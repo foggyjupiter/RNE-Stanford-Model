@@ -262,3 +262,39 @@ export function readChart(div: HTMLElement, lrs: number[], hrs: number[]): void 
 		margin: { l: 56, r: 16, t: 28, b: 44 },
 	}));
 }
+
+// ---------------------------------------------------------------- 소자 간 몬테카를로
+// 읽기 저항 분포 (단일 계열, log10 R 구간)
+export function mcHistogramChart(div: HTMLElement, R: ArrayLike<number>): void {
+	const th = theme();
+	const l = Array.from(R).filter((r) => r > 0 && Number.isFinite(r)).map(Math.log10);
+	const lo = Math.min(...l) - 0.15;
+	const hi = Math.max(...l) + 0.15;
+	const ticks = decadeTicks(lo, hi);
+	const size = Math.max((hi - lo) / 30, 0.02);
+	const data: Plotly.Data[] = [{
+		type: "histogram",
+		x: l,
+		xbins: { start: lo, end: hi, size },
+		marker: { color: th.s1, line: { color: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(), width: 1 } },
+		hovertemplate: "log₁₀R = %{x:.2f}<br>%{y}개 소자<extra></extra>",
+	}];
+	draw(div, data, layout(th, { title: "읽기 저항 (0.1 V)", range: [lo, hi], tickvals: ticks.vals, ticktext: ticks.text }, { title: "소자 수", integer: true }, { bargap: 0.05, hovermode: "closest" }));
+}
+
+// 필라멘트 수와 읽기 저항의 관계 (점, 로그 y)
+export function mcScatterChart(div: HTMLElement, N: ArrayLike<number>, R: ArrayLike<number>): void {
+	const th = theme();
+	const xs = Array.from(N);
+	const ys = Array.from(R);
+	const data: Plotly.Data[] = [{
+		type: "scatter",
+		mode: "markers",
+		x: xs,
+		y: ys,
+		marker: { color: th.s1, size: 9, opacity: 0.55, line: { color: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(), width: 1 } },
+		customdata: ys.map((r) => siFormat(r, "Ω")),
+		hovertemplate: "필라멘트 %{x}개<br>%{customdata}<extra></extra>",
+	}];
+	draw(div, data, layout(th, { title: "소자당 필라멘트 수", integer: true, dtick: 1 }, { title: "읽기 저항 (Ω)", log: true }, { hovermode: "closest" }));
+}

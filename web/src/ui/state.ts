@@ -1,6 +1,6 @@
 // 앱 상태와 모드별 기본값.
 
-import { DEFAULT, DEFAULT_VARIABILITY, RS_SET, type Params, type Variability } from "../model";
+import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, RS_SET, type MonteCarloSpec, type Params, type Variability } from "../model";
 
 export type Mode = "sweep" | "pulse" | "sequence" | "fixed";
 
@@ -45,6 +45,8 @@ export interface FixedSettings {
 	rNeck: number;	// 잘록 구간 반경 [m]
 	neckLen: number;	// 잘록 구간 길이 [m]
 	vMax: number;	// 스윕 범위 ±vMax [V]
+	mcOn: boolean;	// 소자 간 몬테카를로 (교수님 요청, A38)
+	mc: MonteCarloSpec;
 }
 
 export interface AppState {
@@ -71,7 +73,7 @@ export const DEFAULT_SEQUENCE: SequenceSettings = {
 	rs: RS_SET,
 	cycles: 2,
 };
-export const DEFAULT_FIXED: FixedSettings = { rNeck: 4e-9, neckLen: 8e-9, vMax: 0.5 };
+export const DEFAULT_FIXED: FixedSettings = { rNeck: 4e-9, neckLen: 8e-9, vMax: 0.5, mcOn: false, mc: { ...DEFAULT_MC } };
 
 // 변동성을 켤 때 사이클 수가 1이면 이 값으로 올린다. 2차원 계산이라 사이클당 수 초가 걸려 낮게 잡음
 export const VARIABILITY_CYCLES = 3;
@@ -87,6 +89,6 @@ export function initialState(): AppState {
 		sweep: { ...DEFAULT_SWEEP },
 		pulse: { ...DEFAULT_PULSE },
 		sequence: { ...DEFAULT_SEQUENCE },
-		fixed: { ...DEFAULT_FIXED },
+		fixed: { ...DEFAULT_FIXED, mc: { ...DEFAULT_MC } },
 	};
 }

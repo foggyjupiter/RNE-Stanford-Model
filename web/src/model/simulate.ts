@@ -322,3 +322,117 @@ export function setPoint(r: SimResult): number {
 	}
 	return NaN;
 }
+
+// ---------------------------------------------------------------- 소자 간 몬테카를로 (교수님 요청)
+// 고정 상태에서 필라멘트 개수, 필라멘트마다 지름·잘록 구간(갭) 반경·길이를 무작위로 뽑아 읽기 저항 분포를 본다.
+// 필라멘트마다 형상이 달라 각각 2차원으로 풀고 병렬로 합친다 (A38).
+export interface FilamentGeom {
+	phi: number;	// 필라멘트 지름 [m]
+	rNeck: number;	// 잘록 구간 반경 [m]
+	neckLen: number;	// 잘록 구간 길이 [m]
+}
+
+export interface MonteCarloSpec {
+	devices: number;	// 소자 수
+	rNeck: number;	// 잘록 구간 반경 평균 [m]
+	neckLen: number;	// 잘록 구간 길이 평균 [m]
+	sigmaPhi: number;	// 지름의 상대 표준편차 [-] (A39)
+	sigmaNeck: number;	// 잘록 반경의 상대 표준편차 [-] (A39)
+	sigmaLen: number;	// 잘록 길이의 상대 표준편차 [-] (A39)
+}
+
+export const DEFAULT_MC: Readonly<MonteCarloSpec> = Object.freeze({
+	devices: 100,
+	rNeck: 4e-9,	// [m]
+	neckLen: 8e-9,	// [m]
+	sigmaPhi: 0.2,
+	sigmaNeck: 0.3,
+	sigmaLen: 0.3,
+});
+
+// 시드를 받는 균등 [0, 1) 난수 (mulberry32)
+export function uniformRng(seed: number): () => number {
+	let s = seed >>> 0;
+	return (): number => {
+		s = (s + 0x6d2b79f5) >>> 0;
+		let z = s;
+		z = Math.imul(z ^ (z >>> 15), z | 1);
+		z ^= z + Math.imul(z ^ (z >>> 7), z | 61);
+		return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+// 평균 mean, 상대 표준편차 rel인 로그정규 표본 (A39)
+export function lognormal(normal: () => number, mean: number, rel: number): number {
+	if (rel <= 0) return mean;
+	const s2 = Math.log(1 + rel * rel);
+	return mean * Math.exp(Math.sqrt(s2) * normal() - 0.5 * s2);
+}
+
+// 포아송(mean)에서 0을 뺀 분포: 포밍된 소자에는 필라멘트가 적어도 하나 있다 (A39). Knuth 방법
+export function poissonAtLeastOne(uniform: () => number, mean: number): number {
+	const m = Math.max(mean, 1e-9);
+	for (;;) {
+		let k = 0;
+		let prod = uniform();
+		if (m < 30) {
+			const L = Math.exp(-m);
+			while (prod > L) {
+				k++;
+				prod *= uniform();
+			}
+		} else {
+			// 평균이 크면 정규 근사 (exp(-m)이 너무 작아짐)
+			let u = 0;
+			while (u === 0) u = uniform();
+			k = Math.max(0, Math.round(m + Math.sqrt(m) * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * uniform())));
+		}
+		if (k >= 1) return k;
+	}
+}
+
+// 소자 하나의 필라멘트 형상 목록. 개수 평균은 nF*aCell, 지름 평균은 phi0
+export function sampleDevice(spec: MonteCarloSpec, p: Params, uniform: () => number, normal: () => number): FilamentGeom[] {
+	const n = poissonAtLeastOne(uniform, p.nF * p.aCell);
+	const out: FilamentGeom[] = [];
+	for (let k = 0; k < n; k++) {
+		const phi = Math.min(lognormal(normal, p.phi0, spec.sigmaPhi), 1.8 * p.Rdom);	// 계산 영역 안에 들어가게
+		const rNeck = Math.min(lognormal(normal, spec.rNeck, spec.sigmaNeck), phi / 2);
+		const neckLen = Math.min(lognormal(normal, spec.neckLen, spec.sigmaLen), p.L0);
+		out.push({ phi, rNeck, neckLen });
+	}
+	return out;
+}
+
+// 필라멘트 하나의 경계 반경 r_b(z): 지름 phi, 가운데 neckLen 구간만 반경 rNeck
+export function filamentProfile(fg: FilamentGeom, p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
+	const g = makeGrid(p, gs);
+	const rb = new Float64Array(g.nz).fill(fg.phi / 2);
+	for (let j = 0; j < g.nz; j++) if (Math.abs(g.zc[j] - p.L0 / 2) <= fg.neckLen / 2) rb[j] = Math.min(fg.rNeck, fg.phi / 2);
+	return rb;
+}
+
+// 필라멘트가 서로 다른 소자의 정적 I-V (RL 직렬, 필라멘트 병렬 + 셀 전체 산화막 누설, A38)
+export function deviceIv(v: readonly number[], filaments: FilamentGeom[], p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
+	const g = makeGrid(p, gs);
+	const solvers = filaments.map((fg) => new FieldSolver(g, p, filamentProfile(fg, p, gs)));
+	const gOx = p.aCell / (p.rhoOx * p.L0);	// 필라멘트 밖 산화막 누설 컨덕턴스 [S]
+	const out = new Float64Array(v.length);
+	for (let k = 0; k < v.length; k++) {
+		const vk = v[k];
+		if (vk === 0) continue;
+		const fn = (vc: number): number => {
+			let i = 0;
+			for (const fs of solvers) i += fs.solve(vc).I;
+			return (vk - vc) / p.RL - i - gOx * vc;
+		};
+		const vc = brent(fn, Math.min(0, vk), Math.max(0, vk), 1e-9, 1e-10);
+		out[k] = (vk - vc) / p.RL;
+	}
+	return out;
+}
+
+// 소자 읽기 저항 (0.1 V, RL 포함) [ohm]
+export function deviceRead(filaments: FilamentGeom[], p: Params, gs: GridSpec = DEFAULT_GRID, vRead = 0.1): number {
+	return vRead / deviceIv([vRead], filaments, p, gs)[0];
+}

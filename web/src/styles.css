@@ -701,3 +701,20 @@ summary:focus-visible {
 		padding: 20px 16px 28px;
 	}
 }
+
+/* 파형 패널 안의 하위 묶음 (고정 상태 모드의 몬테카를로) */
+.subpanel {
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px dashed var(--line);
+}
+
+.subpanel-title {
+	margin: 0 0 4px;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.subpanel .panel-hint {
+	margin-bottom: 10px;
+}

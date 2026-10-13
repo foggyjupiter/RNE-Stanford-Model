@@ -3,8 +3,9 @@
 import { DEFAULT_GRID, type GridSpec, type Params } from "./params";
 import { makeGrid } from "./fields";
 import {
-	ivFixedState, neckProfile, normalRng, pulseWaveform, readResistance, resetPoint, resetRampWaveform,
-	sampleCycleParams, simulate, type Op, type SimResult, type Variability, type Waveform,
+	deviceIv, deviceRead, ivFixedState, neckProfile, normalRng, pulseWaveform, readResistance, resetPoint, resetRampWaveform,
+	sampleCycleParams, sampleDevice, simulate, uniformRng, type FilamentGeom, type MonteCarloSpec, type Op, type SimResult,
+	type Variability, type Waveform,
 } from "./simulate";
 
 export interface SweepJob {
@@ -59,6 +60,8 @@ export interface FixedJob {
 	neckLen: number;	// 잘록 구간 길이 [m]
 	params: Params;
 	grid?: GridSpec;
+	mc?: MonteCarloSpec;	// 있으면 소자 간 몬테카를로 (A38, A39)
+	seed?: number;
 }
 
 export type Job = SweepJob | PulseJob | SequenceJob | FixedJob;
@@ -79,6 +82,13 @@ export interface TransientOutput {
 	rEnd: number;	// 끝 상태 읽기 저항 [ohm]
 }
 
+export interface MonteCarloOutput {
+	R: Float64Array;	// 소자별 0.1 V 읽기 저항 [ohm]
+	N: Float64Array;	// 소자별 필라멘트 수
+	devices: FilamentGeom[][];	// 소자별 필라멘트 형상
+	ivSamples: { v: Float64Array; i: Float64Array }[];	// 앞쪽 몇 개 소자의 I-V
+}
+
 export interface FixedOutput {
 	kind: "fixed";
 	v: Float64Array;	// [V]
@@ -86,7 +96,11 @@ export interface FixedOutput {
 	r01: number;	// 0.1 V 읽기 저항 [ohm]
 	rb: Float64Array;	// CF 형상 [m]
 	z: Float64Array;	// 높이 [m]
+	mc?: MonteCarloOutput;
 }
+
+const MC_IV_SAMPLES = 8;	// I-V를 겹쳐 그릴 소자 수
+const MC_IV_POINTS = 21;	// 그 I-V의 점 수
 
 export type JobOutput = TransientOutput | FixedOutput;
 
@@ -137,7 +151,7 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 	if (job.kind === "fixed") {
 		const g = makeGrid(p, gs);
 		const rb = neckProfile(job.rNeck, job.neckLen, p, gs);
-		return {
+		const out: FixedOutput = {
 			kind: "fixed",
 			v: Float64Array.from(job.v),
 			i: ivFixedState(job.v, rb, p, gs),
@@ -145,6 +159,27 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 			rb,
 			z: Float64Array.from(g.zc),
 		};
+		if (job.mc) {
+			const spec = { ...job.mc, rNeck: job.rNeck, neckLen: job.neckLen };
+			const uniform = uniformRng(job.seed ?? 1);
+			const normal = normalRng((job.seed ?? 1) * 7919 + 1);
+			const R = new Float64Array(spec.devices);
+			const N = new Float64Array(spec.devices);
+			const devices: FilamentGeom[][] = [];
+			const ivSamples: { v: Float64Array; i: Float64Array }[] = [];
+			const vMax = Math.max(...job.v.map(Math.abs));
+			const vIv = Array.from({ length: MC_IV_POINTS }, (_, k) => -vMax + 2 * vMax * k / (MC_IV_POINTS - 1));
+			for (let d = 0; d < spec.devices; d++) {
+				const fil = sampleDevice(spec, p, uniform, normal);
+				devices.push(fil);
+				N[d] = fil.length;
+				R[d] = deviceRead(fil, p, gs, V_READ);
+				if (d < MC_IV_SAMPLES) ivSamples.push({ v: Float64Array.from(vIv), i: deviceIv(vIv, fil, p, gs) });
+				onProgress?.(d + 1, spec.devices);
+			}
+			out.mc = { R, N, devices, ivSamples };
+		}
+		return out;
 	}
 	const rStart = readResistance(p.phi0 / 2, p, V_READ, gs);
 	if (job.kind === "pulse") {

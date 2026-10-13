@@ -462,3 +462,102 @@ def set_point(res, p=DEFAULT):
 	r = np.abs(res.v_cell[idx] / np.where(res.i[idx] == 0, 1e-30, res.i[idx]))
 	hit = np.where(r < r[0] / 10)[0]
 	return res.v_app[idx[hit[0]]] if hit.size else np.nan
+
+
+# ---------------------------------------------------------- 소자 간 몬테카를로 (교수님 요청)
+# 고정 상태에서 필라멘트 개수, 필라멘트마다 지름·잘록 구간(갭) 반경·길이를 무작위로 뽑아
+# 읽기 저항 분포를 본다. 필라멘트마다 형상이 달라 각각 2차원으로 풀고 병렬로 합친다 (A38).
+@dataclass(frozen=True)
+class FilamentGeom:
+	phi: float	# 필라멘트 지름 [m]
+	r_neck: float	# 잘록 구간(끊어지려는 곳) 반경 [m]
+	neck_len: float	# 잘록 구간 길이 [m]
+
+
+@dataclass(frozen=True)
+class MonteCarloSpec:
+	devices: int = 100	# 소자 수
+	r_neck: float = 4e-9	# 잘록 구간 반경 평균 [m]
+	neck_len: float = 8e-9	# 잘록 구간 길이 평균 [m]
+	sigma_phi: float = 0.2	# 지름의 상대 표준편차 [-] (A39)
+	sigma_neck: float = 0.3	# 잘록 반경의 상대 표준편차 [-] (A39)
+	sigma_len: float = 0.3	# 잘록 길이의 상대 표준편차 [-] (A39)
+
+
+def lognormal(rng, mean, rel_sigma):
+	"""평균 mean, 상대 표준편차 rel_sigma인 로그정규 표본 (A39)."""
+	if rel_sigma <= 0:
+		return mean
+	s2 = math.log(1.0 + rel_sigma * rel_sigma)
+	return mean * math.exp(math.sqrt(s2) * rng.standard_normal() - 0.5 * s2)
+
+
+def poisson_at_least_one(rng, mean):
+	"""포아송(mean)에서 0을 뺀 분포: 포밍된 소자에는 필라멘트가 적어도 하나 있다 (A39)."""
+	while True:
+		k = int(rng.poisson(max(mean, 1e-9)))
+		if k >= 1:
+			return k
+
+
+def sample_device(spec, p, rng):
+	"""소자 하나의 필라멘트 형상 목록. 개수 평균은 n_f*A_cell, 지름 평균은 phi0."""
+	n = poisson_at_least_one(rng, p.n_f * p.A_cell)
+	out = []
+	for _ in range(n):
+		phi = min(lognormal(rng, p.phi0, spec.sigma_phi), 1.8 * p.R_dom)	# 계산 영역 안에 들어가게
+		rn = min(lognormal(rng, spec.r_neck, spec.sigma_neck), phi / 2)
+		ln = min(lognormal(rng, spec.neck_len, spec.sigma_len), p.L0)
+		out.append(FilamentGeom(phi, rn, ln))
+	return out
+
+
+def filament_profile(fg, p=DEFAULT, gs=DEFAULT_GRID):
+	"""필라멘트 하나의 경계 반경 r_b(z): 지름 phi, 가운데 길이 neck_len 구간만 반경 r_neck."""
+	g = make_grid(p, gs)
+	rb = np.full(len(g.zc), fg.phi / 2)
+	rb[np.abs(g.zc - p.L0 / 2) <= fg.neck_len / 2] = min(fg.r_neck, fg.phi / 2)
+	return rb
+
+
+def device_iv(v, filaments, p=DEFAULT, gs=DEFAULT_GRID):
+	"""필라멘트가 서로 다른 소자의 정적 I-V (RL 직렬, 필라멘트 병렬 + 셀 전체 산화막 누설).
+
+	필라멘트마다 자기 계산 영역에서 2차원으로 푼다 (영역 간 열·전기 간섭 무시, A38).
+	"""
+	g = make_grid(p, gs)
+	solvers = [FieldSolver(g, p, filament_profile(fg, p, gs)) for fg in filaments]
+	g_ox = p.A_cell / (p.rho_ox * p.L0)	# 필라멘트 밖 산화막 누설 컨덕턴스 [S]
+	out = np.empty(len(v))
+	for k, vk in enumerate(v):
+		vk = float(vk)
+		if vk == 0.0:
+			out[k] = 0.0
+			continue
+
+		def g_fn(vc):
+			return (vk - vc) / p.RL - sum(fs.solve(vc).I for fs in solvers) - g_ox * vc
+
+		lo, hi = sorted([0.0, vk])
+		vc = brentq(g_fn, lo, hi, xtol=1e-9, rtol=1e-10)
+		out[k] = (vk - vc) / p.RL
+	return out
+
+
+def device_read(filaments, p=DEFAULT, gs=DEFAULT_GRID, v_read=0.1):
+	"""소자 읽기 저항 (0.1 V, RL 포함) [ohm]."""
+	return v_read / device_iv([v_read], filaments, p, gs)[0]
+
+
+def monte_carlo(spec, p=DEFAULT, rng=None, gs=DEFAULT_GRID):
+	"""소자 spec.devices개를 뽑아 (읽기 저항 배열 [ohm], 필라멘트 수 배열, 형상 목록)을 반환."""
+	rng = rng if rng is not None else np.random.default_rng()
+	R = np.empty(spec.devices)
+	N = np.empty(spec.devices, dtype=int)
+	devs = []
+	for d in range(spec.devices):
+		fil = sample_device(spec, p, rng)
+		devs.append(fil)
+		N[d] = len(fil)
+		R[d] = device_read(fil, p, gs)
+	return R, N, devs

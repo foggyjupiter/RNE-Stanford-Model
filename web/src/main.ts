@@ -1,9 +1,9 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_VARIABILITY, filamentCount, type Job, type JobOutput, type FixedOutput, type Params, type SimResult, type TransientOutput } from "./model";
+import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, filamentCount, type Job, type JobOutput, type FixedOutput, type Params, type SimResult, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
-import { downloadPng, histogramChart, ivChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
+import { downloadPng, histogramChart, ivChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
 import { downloadCsv, resultCsv, summaryCsv } from "./ui/export";
 import { meanStd, median, siFormat, timeUnit } from "./ui/format";
@@ -98,6 +98,51 @@ function cyclesField(get: () => number, set: (v: number) => void): Field {
 	return numField("cycles", "N<sub>cyc</sub>", "사이클 수", "", 1, MAX_CYCLES, 1, get, (v) => set(Math.max(1, Math.min(MAX_CYCLES, Math.round(v)))), { integer: true, note: "사이클당 수 초" });
 }
 
+// 고정 상태 모드의 소자 간 몬테카를로 설정 (교수님 요청: 갭, 두께, 밀도를 현실처럼 무작위로)
+function mcPanel(): HTMLElement {
+	const w = state.fixed;
+	const box = el("div", "subpanel");
+	box.append(el("h3", "subpanel-title", "무작위성 (소자 간 몬테카를로)"));
+	box.append(el("p", "panel-hint", "소자마다 필라멘트 개수(포아송, 평균 = n_f·A_cell), 필라멘트마다 지름·잘록 반경·잘록 길이(로그정규, 평균 = 위 값)를 뽑아 읽기 저항 분포를 본다 (A38, A39)"));
+	const body = el("div", "panel-body");
+	const sw = makeSwitch("무작위성 켜기", () => w.mcOn, (on) => {
+		w.mcOn = on;
+		body.hidden = !on;
+		schedule(0);
+	});
+	box.append(sw.el);
+	body.hidden = !w.mcOn;
+	const m = w.mc;
+	const fields = [
+		numField("mcN", "M", "소자 수", "", 10, 500, 1, () => m.devices, (v) => (m.devices = Math.max(1, Math.round(v))), { integer: true, log: true }),
+		numField("mcPhi", "σ(φ)/φ", "필라멘트 지름 산포 (상대)", "", 0, 1, 1, () => m.sigmaPhi, (v) => (m.sigmaPhi = Math.max(0, v)), { note: "가정 (A39)" }),
+		numField("mcNeck", "σ(r)/r", "잘록 반경(갭) 산포 (상대)", "", 0, 1.5, 1, () => m.sigmaNeck, (v) => (m.sigmaNeck = Math.max(0, v)), { note: "가정 (A39)" }),
+		numField("mcLen", "σ(L)/L", "잘록 길이 산포 (상대)", "", 0, 1.5, 1, () => m.sigmaLen, (v) => (m.sigmaLen = Math.max(0, v)), { note: "가정 (A39)" }),
+	];
+	for (const f of fields) {
+		waveFields.push(f);
+		body.append(f.el);
+	}
+	const row = el("div", "btn-row");
+	const reroll = el("button", "btn", "다시 뽑기");
+	reroll.type = "button";
+	reroll.addEventListener("click", () => {
+		state.seed = (state.seed * 1103515245 + 12345) >>> 0 || 1;
+		schedule(0);
+	});
+	const reset = el("button", "link-btn", "기본값");
+	reset.type = "button";
+	reset.addEventListener("click", () => {
+		w.mc = { ...DEFAULT_MC };
+		buildWave();
+		schedule(0);
+	});
+	row.append(reroll, reset);
+	body.append(row);
+	box.append(body);
+	return box;
+}
+
 function waveHint(): string {
 	if (state.mode === "sweep") return "unipolar: 0 → +V_RESET → 0 (제한 없음) → +V_SET → 0 (R_s 직렬). 포밍된 LRS에서 시작";
 	if (state.mode === "pulse") return state.pulse.op === "reset" ? "RESET 펄스: 포밍된 LRS에서 시작, 제한 없음, C_P 포함" : "SET 펄스: RESET 스윕 뒤 HRS에서 시작, R_s 직렬, C_P 포함";
@@ -155,6 +200,7 @@ function buildWave(): void {
 		add(numField("fr", "r<sub>neck</sub>", "잘록 구간 반경", "nm", 0.5, p.phi0 / 2 * 1e9, 1e-9, () => w.rNeck, (v) => (w.rNeck = Math.max(0, v))));
 		add(numField("fl", "L<sub>neck</sub>", "잘록 구간 길이", "nm", 0, p.L0 * 1e9, 1e-9, () => w.neckLen, (v) => (w.neckLen = Math.max(0, v))));
 		add(numField("fv", "V<sub>max</sub>", "스윕 범위 ±", "V", 0.05, 1, 1, () => w.vMax, (v) => (w.vMax = v)));
+		s.append(mcPanel());
 	}
 	const reset = el("button", "link-btn", "파형 기본값");
 	reset.type = "button";
@@ -162,7 +208,7 @@ function buildWave(): void {
 		if (state.mode === "sweep") state.sweep = { ...DEFAULT_SWEEP };
 		else if (state.mode === "pulse") state.pulse = { ...DEFAULT_PULSE };
 		else if (state.mode === "sequence") state.sequence = { ...DEFAULT_SEQUENCE };
-		else state.fixed = { ...DEFAULT_FIXED };
+		else state.fixed = { ...DEFAULT_FIXED, mc: { ...DEFAULT_MC } };
 		buildWave();
 		schedule(0);
 	});
@@ -327,7 +373,10 @@ function currentJob(): Job {
 	const f = state.fixed;
 	const n = 41;
 	const v = Array.from({ length: n }, (_, k) => -f.vMax + 2 * f.vMax * k / (n - 1));
-	return { kind: "fixed", v, rNeck: Math.min(f.rNeck, p.phi0 / 2), neckLen: Math.min(f.neckLen, p.L0), params: p };
+	return {
+		kind: "fixed", v, rNeck: Math.min(f.rNeck, p.phi0 / 2), neckLen: Math.min(f.neckLen, p.L0), params: p,
+		mc: f.mcOn ? { ...f.mc } : undefined, seed: state.seed,
+	};
 }
 
 // ---------------------------------------------------------------- 계산 예약 / 진행 표시
@@ -352,11 +401,12 @@ async function compute(): Promise<void> {
 	const job = currentJob();
 	const mode = state.mode;
 	const cycles = job.kind === "sweep" || job.kind === "sequence" ? job.cycles : 1;
+	const isMc = job.kind === "fixed" && job.mc !== undefined;
 	const t0 = performance.now();
 	setStatus("계산 중…", true, 0);
 	try {
 		const out = await client.run(job, (done, total) => {
-			const label = cycles > 1 ? ` · ${Math.min(Math.floor(done) + 1, total)} / ${total} 사이클` : "";
+			const label = isMc ? ` · ${Math.floor(done)} / ${total} 소자` : cycles > 1 ? ` · ${Math.min(Math.floor(done) + 1, total)} / ${total} 사이클` : "";
 			setStatus(`계산 중… ${Math.round(100 * done / total)}%${label}`, true, done / total);
 		});
 		lastOut = out;
@@ -555,11 +605,34 @@ function renderSequence(out: TransientOutput, stats: HTMLElement): void {
 }
 
 function renderFixed(out: FixedOutput, stats: HTMLElement): void {
+	const f = state.fixed;
+	if (out.mc) {
+		const mc = out.mc;
+		ensureCards([
+			{ id: "hist", title: "읽기 저항 분포", sub: `${mc.R.length}개 소자, 0.1 V`, wide: true },
+			{ id: "scatter", title: "필라멘트 수와 저항" },
+			{ id: "iv", title: "읽기 I-V", sub: `소자 ${mc.ivSamples.length}개 겹침` },
+		]);
+		mcHistogramChart(cards.get("hist")!, mc.R);
+		mcScatterChart(cards.get("scatter")!, mc.N, mc.R);
+		ivChart(cards.get("iv")!, mc.ivSamples, 1e-15);
+		const R = Array.from(mc.R).sort((a, b) => a - b);
+		const pct = (q: number): number => R[Math.min(R.length - 1, Math.floor(q * (R.length - 1)))];
+		const [, sl] = meanStd(R.map(Math.log10));
+		const [nMean] = meanStd(Array.from(mc.N));
+		stats.append(
+			stat("R 중앙값", siFormat(median(R), "Ω"), "0.1 V 읽기"),
+			stat("R 10–90%", `${siFormat(pct(0.1), "Ω")} – ${siFormat(pct(0.9), "Ω")}`),
+			stat("σ(log₁₀R)", sl.toFixed(2), "분포 폭"),
+			stat("필라멘트 수", `${nMean.toFixed(2)}개`, `평균 (n_f·A_cell = ${(state.params.nF * state.params.aCell).toFixed(2)})`),
+			stat("기준 소자", siFormat(out.r01, "Ω"), "산포 없음, N = 1"),
+		);
+		return;
+	}
 	ensureCards([
 		{ id: "iv", title: "읽기 I-V", sub: "고정 상태, 스위칭 없음", wide: true, tall: true },
 	]);
 	ivChart(cards.get("iv")!, [{ v: out.v, i: out.i }], 1e-15);
-	const f = state.fixed;
 	stats.append(
 		stat("R (0.1 V)", siFormat(out.r01, "Ω"), "R_L 포함"),
 		stat("잘록 구간 면적", `${(Math.PI * f.rNeck * f.rNeck * 1e18).toFixed(1)} nm²`, "π r²"),
