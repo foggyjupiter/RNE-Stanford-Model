@@ -1,13 +1,13 @@
 # RRAM 시뮬레이터
 
-금속산화물 bipolar RRAM의 전도성 필라멘트(conductive filament) 모델을 독립적으로 구현하고, 브라우저에서 돌아가는 시뮬레이터를 만드는 프로젝트입니다(진행 중).
+금속산화물 bipolar RRAM의 전도성 필라멘트(conductive filament) 모델을 독립적으로 구현하고, 브라우저에서 돌아가는 시뮬레이터를 만드는 프로젝트입니다.
 프로젝트 지침: `CLAUDE.md`. 가정과 그 근거: `ASSUMPTIONS.md`.
 
 ## 진행 상황
 
 - [x] 1단계: 파이썬 레퍼런스 (`python/`)
 - [x] 2단계: TypeScript 코어 (`web/src/model/`)
-- [ ] 3단계: UI (`web/`)
+- [x] 3단계: UI (`web/`)
 
 ## 1단계 — 파이썬 레퍼런스
 
@@ -35,6 +35,22 @@ npm run typecheck
 - `solver.ts`: 적응형 Rosenbrock ROS2 (L-stable) + 스텝당 상태 변화량 상한
 - `simulate.ts`: 파형, 과도 시뮬레이션, 읽기 저항, 고정 상태 모드, 변동성 (10)–(11)
 - `jobs.ts` / `worker.ts` / `client.ts`: 직렬화 가능한 작업 정의, Web Worker, Promise 클라이언트 (새 요청이 오면 이전 계산은 취소)
+
+## 3단계 — UI
+
+```bash
+cd web
+npm run dev       # http://localhost:5173
+npm run build     # dist/ 에 정적 파일 생성
+```
+
+- 스택: Vite + TypeScript + Plotly.js. 계산은 Web Worker에서 돌고, 새 입력이 오면 이전 계산을 취소합니다.
+- 모드: **I-V 스윕** / **펄스** / **쓰기-읽기 시퀀스** / **고정 상태** (갭과 필라멘트 면적을 직접 정해 읽기 I-V 확인)
+- 파라미터 패널: 매뉴얼 Table 3 기준 그룹 (HRS 관련 / LRS 관련 / 스위칭 전압 / 속도 / 기생 성분) + 필라멘트 밀도. 슬라이더 범위는 권장 범위이며, 숫자 입력으로 범위 밖 값도 넣을 수 있습니다(경고 표시). Table 3이 한 값만 주는 항목(V_T, α_a, α_h, γ)은 숫자 입력만 둡니다. `Weff`, `crit_x`는 제외 (A9).
+- 변동성: 켜면 여러 사이클을 겹쳐 그리고 LRS/HRS 분포 히스토그램을 보여 줍니다. 스윕 1사이클이 약 0.25 s(잡음 포함 약 1 s)라, 켤 때 사이클 수가 1이면 5로 올리고 그 이상은 그대로 둡니다. 계산 중에는 진행 막대와 취소 버튼이 나옵니다.
+- 쓰기-읽기 기본 펄스: SET +2 V / 80 ns, RESET −2.5 V / 1 µs → 창 약 73배 (A21)
+- 내보내기: 결과 CSV(모든 사이클, SI 단위), 사이클 요약 CSV, 차트별 PNG
+- 라이트/다크 모드: 시스템 설정을 따르고, 오른쪽 위 버튼으로 바꿀 수 있습니다.
 
 ## 모델의 한계
 

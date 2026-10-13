@@ -2,7 +2,7 @@
 // 마지막 요청만 의미가 있다(슬라이더 드래그): 계산 중에 run()이 새로 오면 워커를 종료하고,
 // 밀려난 Promise는 SupersededError로 reject된다.
 
-import { type Job, type JobOutput } from "./jobs";
+import { type Job, type JobOutput, type ProgressFn } from "./jobs";
 import { type WorkerRequest, type WorkerResponse } from "./worker";
 
 export class SupersededError extends Error {
@@ -11,10 +11,17 @@ export class SupersededError extends Error {
 	}
 }
 
+interface Pending {
+	id: number;
+	resolve: (o: JobOutput) => void;
+	reject: (e: Error) => void;
+	onProgress?: ProgressFn;
+}
+
 export class ModelClient {
 	private worker: Worker | null = null;
 	private nextId = 1;
-	private pending: { id: number; resolve: (o: JobOutput) => void; reject: (e: Error) => void } | null = null;
+	private pending: Pending | null = null;
 
 	private spawn(): Worker {
 		const w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
@@ -22,6 +29,10 @@ export class ModelClient {
 			const msg = ev.data;
 			const p = this.pending;
 			if (!p || p.id !== msg.id) return;
+			if ("progress" in msg) {
+				p.onProgress?.(msg.progress[0], msg.progress[1]);
+				return;
+			}
 			this.pending = null;
 			if (msg.ok) p.resolve(msg.out);
 			else p.reject(new Error(msg.error));
@@ -34,27 +45,33 @@ export class ModelClient {
 		return w;
 	}
 
-	run(job: Job): Promise<JobOutput> {
-		if (this.pending) {
-			// 진행 중인 계산을 버린다: 워커는 작업 도중에 중단시킬 수 없다
-			this.worker?.terminate();
-			this.worker = null;
-			this.pending.reject(new SupersededError());
-			this.pending = null;
-		}
+	get busy(): boolean {
+		return this.pending !== null;
+	}
+
+	run(job: Job, onProgress?: ProgressFn): Promise<JobOutput> {
+		this.cancel();
 		if (!this.worker) this.worker = this.spawn();
 		const id = this.nextId++;
 		const req: WorkerRequest = { id, job };
 		return new Promise<JobOutput>((resolve, reject) => {
-			this.pending = { id, resolve, reject };
+			this.pending = { id, resolve, reject, onProgress };
 			this.worker!.postMessage(req);
 		});
 	}
 
-	dispose(): void {
+	// 진행 중인 계산을 버린다: 워커는 작업 도중에 중단시킬 수 없으므로 종료 후 다음 run()에서 새로 만든다
+	cancel(): void {
+		if (!this.pending) return;
 		this.worker?.terminate();
 		this.worker = null;
-		this.pending?.reject(new SupersededError());
+		this.pending.reject(new SupersededError());
 		this.pending = null;
+	}
+
+	dispose(): void {
+		this.cancel();
+		this.worker?.terminate();
+		this.worker = null;
 	}
 }

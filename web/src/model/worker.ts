@@ -1,5 +1,5 @@
 // Web Worker 진입점: 모델 작업을 UI 스레드 밖에서 실행한다.
-// 입력 메시지: { id, job }. 출력 메시지: { id, ok: true, out } | { id, ok: false, error }.
+// 입력 메시지: { id, job }. 진행 메시지: { id, progress: [done, total] }. 출력 메시지: { id, ok: true, out } | { id, ok: false, error }.
 
 import { runJob, type Job, type JobOutput } from "./jobs";
 
@@ -8,7 +8,10 @@ export interface WorkerRequest {
 	job: Job;
 }
 
-export type WorkerResponse = { id: number; ok: true; out: JobOutput } | { id: number; ok: false; error: string };
+export type WorkerResponse =
+	| { id: number; ok: true; out: JobOutput }
+	| { id: number; ok: false; error: string }
+	| { id: number; progress: [number, number] };
 
 function transferables(out: JobOutput): ArrayBuffer[] {
 	if (out.kind === "fixed") return [out.v.buffer as ArrayBuffer, out.i.buffer as ArrayBuffer];
@@ -20,7 +23,10 @@ function transferables(out: JobOutput): ArrayBuffer[] {
 self.onmessage = (ev: MessageEvent<WorkerRequest>): void => {
 	const { id, job } = ev.data;
 	try {
-		const out = runJob(job);
+		const out = runJob(job, (done, total) => {
+			const msg: WorkerResponse = { id, progress: [done, total] };
+			(self as unknown as Worker).postMessage(msg);
+		});
 		const msg: WorkerResponse = { id, ok: true, out };
 		(self as unknown as Worker).postMessage(msg, transferables(out));
 	} catch (e) {

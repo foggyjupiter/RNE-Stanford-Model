@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RRAM 시뮬레이터</title>
+	<meta name="description" content="금속산화물 bipolar RRAM 전도성 필라멘트 모델 시뮬레이터">
+</head>
+<body>
+	<header class="top">
+		<div class="brand">
+			<h1>RRAM 시뮬레이터</h1>
+			<p>금속산화물 bipolar RRAM · 전도성 필라멘트 모델</p>
+		</div>
+		<nav id="modes" class="modes" aria-label="모드"></nav>
+		<button id="theme" class="btn theme-btn" type="button">시스템</button>
+	</header>
+
+	<div class="layout">
+		<aside class="side" aria-label="설정">
+			<section id="wave"></section>
+			<section id="var"></section>
+			<section id="params" class="params"></section>
+		</aside>
+
+		<main class="main">
+			<div class="toolbar">
+				<div id="status" class="status" role="status" aria-live="polite">
+					<span id="status-text">준비</span>
+					<div id="progress" class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" hidden>
+						<div id="progress-fill" class="progress-fill"></div>
+					</div>
+					<button id="cancel" class="link-btn" type="button" hidden>취소</button>
+				</div>
+				<div class="exports">
+					<button id="csv" class="btn" type="button">CSV</button>
+					<button id="csv-summary" class="btn" type="button">요약 CSV</button>
+				</div>
+			</div>
+			<div id="stats" class="stats"></div>
+			<p id="note" class="note" hidden></p>
+			<div id="charts" class="charts"></div>
+		</main>
+	</div>
+
+	<footer class="foot">
+		<p class="foot-lead">원 모델: PKU-Stanford RRAM SPICE Model v2.0Beta (Peking University &amp; Stanford University, 2015). 이 앱은 공개 논문의 식을 독립적으로 구현한 것이며 원 모델의 코드(.va)를 사용하지 않았습니다. 가정과 근거는 저장소의 ASSUMPTIONS.md에 있습니다.</p>
+		<ol class="refs">
+			<li>H.-S. P. Wong et al., “Metal–Oxide RRAM,” <i>Proc. IEEE</i>, vol. 100, no. 6, pp. 1951–1970, 2012.</li>
+			<li>H. Li et al., “Variation-aware, reliability-emphasized design and optimization of RRAM using SPICE model,” <i>DATE</i>, pp. 1426–1430, 2015.</li>
+			<li>Z. Jiang et al., “Verilog-A compact model for oxide-based RRAM,” <i>SISPAD</i>, pp. 41–44, 2014.</li>
+			<li>H. Li et al., “A SPICE model of resistive random access memory for large-scale memory array simulation,” <i>IEEE EDL</i>, vol. 35, no. 2, pp. 211–213, 2014.</li>
+			<li>X. Guan, S. Yu, and H.-S. P. Wong, “A SPICE compact model of metal oxide resistive switching memory with variations,” <i>IEEE EDL</i>, pp. 1405–1407, 2012.</li>
+		</ol>
+	</footer>
+
+	<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
