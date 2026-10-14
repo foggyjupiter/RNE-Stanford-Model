@@ -60,6 +60,13 @@ class Params:
 	# 기생 성분: [M] Table 3
 	RL: float = 20.0	# 전극 접촉 저항 [ohm]
 	CP: float = 20e-15	# 전극 기생 정전용량 [F]
+	# 전극층 (A41). t_el = 0이면 [R]처럼 산화막 끝면이 T0·고정 전위인 이상적 전극.
+	# t_el > 0이면 위·아래에 두께 t_el의 전극층을 계산 영역에 넣고 그 바깥 면을 T0·고정 전위로 둔다.
+	# 물성 기본값은 TiN: kappa_el = 11.9 W/(K m) [Samani 2013, Thin Solid Films 537, 108],
+	# rho_el = 125 uOhm*cm (DC 반응성 스퍼터 TiN 전극, 약 10 nm) [J. Mater. Sci.: Mater. Electron. 2018, 10.1007/s10854-018-9066-4]
+	t_el: float = 0.0	# 전극 두께 [m]
+	kappa_el: float = 11.9	# 전극 열전도도 [W/(K m)]
+	rho_el: float = 125e-8	# 전극 비저항 [ohm*m] (125 uOhm*cm), 온도 무관으로 둠 (A41)
 	# 교수님 요청: 필라멘트 밀도와 셀 면적 (A10)
 	n_f: float = 1e14	# 단위면적당 필라멘트 수 [1/m^2] (A22)
 	A_cell: float = 1e-14	# 셀 면적 [m^2] (100 nm x 100 nm) → N = 1
@@ -72,6 +79,9 @@ class Params:
 
 DEFAULT = Params()
 
+# TiN 전극 프리셋 (A41). 두께 50 nm는 가정값: 실험 소자의 전극 두께로 바꿔 쓸 것
+TIN_ELECTRODE = {"t_el": 50e-9, "kappa_el": 11.9, "rho_el": 125e-8}
+
 RS_SET = 3e3	# SET 동작 compliance 저항 기본값 [ohm] (A15)
 
 
@@ -82,6 +92,7 @@ class GridSpec:
 	dr_fine: float = 4e-9	# CF 근처 반경 방향 칸 [m] (A35: 브라우저 계산 속도와의 절충)
 	growth: float = 1.15	# 바깥쪽 칸 증가 비율
 	nz: int = 40	# 길이 방향 칸 수
+	el_growth: float = 1.6	# 전극층 칸 증가 비율 (1.3 대비 Rth 차이 0.4% 이하) (산화막 쪽 첫 칸 = 산화막 칸) (A41)
 
 
 DEFAULT_GRID = GridSpec()
@@ -108,6 +119,46 @@ def make_grid(p, gs=DEFAULT_GRID):
 	rf = np.array(faces)
 	zf = np.linspace(0.0, p.L0, gs.nz + 1)
 	return Grid(rf, zf, 0.5 * (rf[:-1] + rf[1:]), 0.5 * (zf[:-1] + zf[1:]))
+
+
+def electrode_faces(p, gs, dz0):
+	"""전극층 안의 칸 경계 (산화막 면에서 잰 거리, 0 .. t_el) [m]. 첫 칸 dz0, 바깥으로 el_growth배씩."""
+	faces = [0.0]
+	d = dz0
+	while faces[-1] < p.t_el - 1e-15:
+		faces.append(min(faces[-1] + d, p.t_el))
+		d *= gs.el_growth
+	return np.array(faces)
+
+
+def electrode_radius(p):
+	"""전극층의 반경 방향 계산 범위 [m] (A41).
+
+	전극은 셀 전체로 퍼져 있으므로 셀 등가 반경 sqrt(A_cell/pi)까지 넓힌다. 다만 바깥 면(T0)까지의
+	거리가 t_el이라 열은 접촉점에서 수 t_el 안에서 빠지므로 R_dom + 10 t_el에서 자른다. 최소 R_dom.
+	"""
+	return max(p.R_dom, min(math.sqrt(p.A_cell / math.pi), p.R_dom + 10 * p.t_el))
+
+
+def full_grid(g, p, gs=DEFAULT_GRID):
+	"""전극층까지 넣은 열·전기 계산용 격자, 아래 전극 칸 수 (A41). t_el = 0이면 (g, 0).
+
+	길이: 산화막 칸 위아래에 전극 칸 (산화막 쪽 첫 칸 = 산화막 칸, 바깥으로 el_growth배).
+	반경: 전극층을 electrode_radius(p)까지 넓히기 위해 R_dom 밖에 칸을 el_growth배씩 덧붙인다.
+	R_dom 밖의 산화막 행은 계산에서 빼는 셀이다 (FieldSolver 참고).
+	"""
+	if p.t_el <= 0:
+		return g, 0
+	ef = electrode_faces(p, gs, g.z_faces[1] - g.z_faces[0])
+	zf = np.concatenate([-ef[::-1], g.z_faces[1:-1], p.L0 + ef])
+	rf = list(g.r_faces)
+	d = rf[-1] - rf[-2]
+	r_el = electrode_radius(p)
+	while rf[-1] < r_el - 1e-15:
+		d *= gs.el_growth
+		rf.append(min(rf[-1] + d, r_el))
+	rf = np.array(rf)
+	return Grid(rf, zf, 0.5 * (rf[:-1] + rf[1:]), 0.5 * (zf[:-1] + zf[1:])), len(ef) - 1
 
 
 def cf_fraction(g, rb):
@@ -159,28 +210,45 @@ class Fields:
 	P: float	# 소비 전력 [W]
 
 
+OFF = 1e-9	# 계산에서 빼는 셀의 전도도 배율 [-] (A41)
+
+
 class FieldSolver:
 	"""한 CF 형상(rb)에 대해 정상 상태 전위·온도를 푸는 도우미. 열 행렬 분해를 재사용한다."""
 
-	def __init__(self, g, p, rb):
+	def __init__(self, g, p, rb, gs=DEFAULT_GRID):
 		self.g = g
 		self.p = p
 		self.f = cf_fraction(g, rb)
-		kappa = self.f * p.kappa_cf + (1 - self.f) * p.kappa_ox
-		A, self.Gt_th, self.Gb_th, _, _ = _assemble(g, kappa)
+		# 전극층이 있으면 산화막 위아래에 전극 행을 붙인 격자에서 푼다 (A41)
+		self.gf, self.nb = full_grid(g, p, gs)
+		nzf, nrf = len(self.gf.zc), len(self.gf.rc)
+		nz, nr = len(g.zc), len(g.rc)
+		self.ox = (slice(self.nb, self.nb + nz), slice(0, nr))
+		# R_dom 밖 산화막 행: 산화막을 R_dom에서 단열로 둔 [R] 보정(A31)을 유지하려고 사실상 끊는다
+		self.off = (slice(self.nb, self.nb + nz), slice(nr, nrf))
+		kappa = np.full((nzf, nrf), p.kappa_el)
+		kappa[self.off] = OFF * p.kappa_ox
+		kappa[self.ox] = self.f * p.kappa_cf + (1 - self.f) * p.kappa_ox
+		A, self.Gt_th, self.Gb_th, _, _ = _assemble(self.gf, kappa)
 		self.lu_th = spla.splu(A)
 		self.T_last = None
 
 	def solve(self, v, tol=0.05, max_iter=80, relax=0.7):
-		"""셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭."""
-		g, p, f = self.g, self.p, self.f
-		nz, nr = f.shape
+		"""셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭.
+
+		반환하는 V, T는 산화막 행만 (전극층은 계산에만 쓴다). P는 전극층 발열 포함.
+		"""
+		g, p, f = self.gf, self.p, self.f
+		nz, nr = len(g.zc), len(g.rc)
 		s = 1.0 if v >= 0 else -1.0
 		va = abs(v)
 		T = self.T_last.copy() if self.T_last is not None else np.full((nz, nr), p.T0)
+		sigma = np.full((nz, nr), 1.0 / p.rho_el)
+		sigma[self.off] = OFF / p.rho_ox
 		for it in range(max_iter):
-			rho = p.rho_cf * (1 + p.alpha_T * (T - p.T0))
-			sigma = f / rho + (1 - f) / p.rho_ox
+			rho = p.rho_cf * (1 + p.alpha_T * (T[self.ox] - p.T0))
+			sigma[self.ox] = f / rho + (1 - f) / p.rho_ox
 			A_e, Gt_e, Gb_e, Gr_e, Gz_e = _assemble(g, sigma)
 			b = np.zeros(nz * nr)
 			b[(nz - 1) * nr:] = Gt_e * va
@@ -205,7 +273,7 @@ class FieldSolver:
 				break
 		self.T_last = T
 		I = float(np.sum(Gt_e * (va - V[-1, :])))
-		return Fields(s * V, T, s * I, float(q.sum()))
+		return Fields(s * V[self.ox], T[self.ox], s * I, float(q.sum()))
 
 
 def boundary_values(g, fld, rb):
@@ -281,6 +349,15 @@ def pulse_waveform(op, v_pulse, t_edge=10e-9, t_width=1e-6):
 	ts = np.array([0.0, t_edge, t_edge + t_width, 2 * t_edge + t_width])
 	vs = np.array([0.0, v_pulse, v_pulse, 0.0])
 	return Waveform(_interp(ts, vs), lambda t: op, ts[-1], ts)
+
+
+def ramp_waveform(op, v_max, rate):
+	"""한 방향 램프 0 -> v_max (rate [V/s]) 하나. 측정에서 RESET이 일어나면 끊는 스윕을 흉내 낸다.
+
+	계단 스윕(계단 dV, 머무는 시간 tau)은 평균 램프 속도 dV/tau의 연속 램프로 본다 (A42).
+	"""
+	ts = np.array([0.0, v_max / rate])
+	return Waveform(_interp(ts, np.array([0.0, v_max])), lambda t: op, ts[-1], ts)
 
 
 def series_r(op, Rs, Rs_reset):
@@ -380,7 +457,7 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		cc = i_cc is not None and op == "set"
 		r_ser = p.RL + (0.0 if cc else series_r(op, Rs, Rs_reset))
 		cp = p.CP if include_cp else 0.0
-		fs = FieldSolver(g, p, rb)
+		fs = FieldSolver(g, p, rb, gs)
 		fs.T_last = T_prev
 		vc_new, fld = solve_cell(fs, p, va, r_ser, cp, dt, vc)
 		i_term = (va - vc_new) / r_ser
@@ -388,7 +465,7 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 			vc_new, fld = solve_cell_cc(fs, p, i_cc, vc_new, cp, dt, vc)
 			i_term = i_cc
 		vc = vc_new
-		T_prev = fld.T
+		T_prev = fs.T_last	# 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		out["t"].append(t)
 		out["v_app"].append(va)
 		out["v_cell"].append(vc)
@@ -427,7 +504,7 @@ def read_resistance(rb, p=DEFAULT, gs=DEFAULT_GRID, v_read=0.1):
 	"""
 	g = make_grid(p, gs)
 	rbv = np.full(len(g.zc), rb) if np.isscalar(rb) else np.asarray(rb, dtype=float)
-	fs = FieldSolver(g, p, rbv)
+	fs = FieldSolver(g, p, rbv, gs)
 	vc, fld = solve_cell(fs, p, v_read, p.RL)
 	return v_read / (p.N * fld.I)
 
@@ -445,7 +522,7 @@ def iv_fixed_state(v, rb, p=DEFAULT, gs=DEFAULT_GRID):
 	"""고정 상태 모드: 주어진 CF 형상 rb에서의 정적 I-V (RL 포함, 스위칭 없음)."""
 	g = make_grid(p, gs)
 	rbv = np.full(len(g.zc), rb) if np.isscalar(rb) else np.asarray(rb, dtype=float)
-	fs = FieldSolver(g, p, rbv)
+	fs = FieldSolver(g, p, rbv, gs)
 	out = np.empty(len(v))
 	for k, vk in enumerate(v):
 		vc, fld = solve_cell(fs, p, float(vk), p.RL)
@@ -549,7 +626,7 @@ def device_iv(v, filaments, p=DEFAULT, gs=DEFAULT_GRID):
 	필라멘트마다 자기 계산 영역에서 2차원으로 푼다 (영역 간 열·전기 간섭 무시, A38).
 	"""
 	g = make_grid(p, gs)
-	solvers = [FieldSolver(g, p, filament_profile(fg, p, gs)) for fg in filaments]
+	solvers = [FieldSolver(g, p, filament_profile(fg, p, gs), gs) for fg in filaments]
 	g_ox = p.A_cell / (p.rho_ox * p.L0)	# 필라멘트 밖 산화막 누설 컨덕턴스 [S]
 	out = np.empty(len(v))
 	for k, vk in enumerate(v):

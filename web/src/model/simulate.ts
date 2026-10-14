@@ -39,6 +39,12 @@ export function resetRampWaveform(vMax: number, tRamp: number): Waveform {
 	return { v: piecewiseLinear(ts, [0, vMax, 0]), op: () => "reset", tEnd: ts[2], corners: ts };
 }
 
+// 한 방향 램프 0 -> vMax (rate [V/s]) 하나. 계단 스윕은 평균 램프 속도의 연속 램프로 본다 (A42)
+export function rampWaveform(op: Op, vMax: number, rate: number): Waveform {
+	const ts = [0, vMax / rate];
+	return { v: piecewiseLinear(ts, [0, vMax]), op: () => op, tEnd: ts[1], corners: ts };
+}
+
 // 사다리꼴 펄스 하나 (지연 0, 상승 = 하강 = tEdge)
 export function pulseWaveform(op: Op, vPulse: number, tEdge = 10e-9, tWidth = 1e-6): Waveform {
 	const ts = [0, tEdge, tEdge + tWidth, 2 * tEdge + tWidth];
@@ -197,7 +203,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		const cc = o.iCc !== undefined && op === "set";
 		const rSer = p.RL + (cc ? 0 : seriesR(op, rs, rsReset));
 		const cp = o.includeCp ? p.CP : 0;
-		const fs = new FieldSolver(g, p, rb);
+		const fs = new FieldSolver(g, p, rb, gs);
 		fs.tLast = tPrev;
 		let sol = solveCell(fs, p, va, rSer, cp, dt, vc);
 		let iTerm = (va - sol.vc) / rSer;
@@ -207,7 +213,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 			iTerm = o.iCc!;
 		}
 		vc = sol.vc;
-		tPrev = sol.fld.T;
+		tPrev = fs.tLast;	// 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		ts.push(t);
 		vas.push(va);
 		vcs.push(vc);
@@ -257,7 +263,7 @@ function profileOf(rb: number | ArrayLike<number>, g: Grid): Float64Array {
 // vRead에서의 셀 저항 (RL 포함, 스위칭 없음) [ohm]. 0.1 V는 [C] Fig. 3의 측정 조건
 export function readResistance(rb: number | ArrayLike<number>, p: Params, vRead = 0.1, gs: GridSpec = DEFAULT_GRID): number {
 	const g = makeGrid(p, gs);
-	const fs = new FieldSolver(g, p, profileOf(rb, g));
+	const fs = new FieldSolver(g, p, profileOf(rb, g), gs);
 	const sol = solveCell(fs, p, vRead, p.RL);
 	return vRead / (filamentCount(p) * sol.fld.I);
 }
@@ -274,7 +280,7 @@ export function neckProfile(rNeck: number, len: number, p: Params, gs: GridSpec 
 // 고정 상태 모드: CF 형상 rb에서의 정적 I-V (RL 포함, 스위칭 없음)
 export function ivFixedState(v: readonly number[], rb: number | ArrayLike<number>, p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
 	const g = makeGrid(p, gs);
-	const fs = new FieldSolver(g, p, profileOf(rb, g));
+	const fs = new FieldSolver(g, p, profileOf(rb, g), gs);
 	const out = new Float64Array(v.length);
 	for (let k = 0; k < v.length; k++) out[k] = filamentCount(p) * solveCell(fs, p, v[k], p.RL).fld.I;
 	return out;
@@ -436,7 +442,7 @@ export function filamentProfile(fg: FilamentGeom, p: Params, gs: GridSpec = DEFA
 // 필라멘트가 서로 다른 소자의 정적 I-V (RL 직렬, 필라멘트 병렬 + 셀 전체 산화막 누설, A38)
 export function deviceIv(v: readonly number[], filaments: FilamentGeom[], p: Params, gs: GridSpec = DEFAULT_GRID): Float64Array {
 	const g = makeGrid(p, gs);
-	const solvers = filaments.map((fg) => new FieldSolver(g, p, filamentProfile(fg, p, gs)));
+	const solvers = filaments.map((fg) => new FieldSolver(g, p, filamentProfile(fg, p, gs), gs));
 	const gOx = p.aCell / (p.rhoOx * p.L0);	// 필라멘트 밖 산화막 누설 컨덕턴스 [S]
 	const out = new Float64Array(v.length);
 	for (let k = 0; k < v.length; k++) {
@@ -456,4 +462,26 @@ export function deviceIv(v: readonly number[], filaments: FilamentGeom[], p: Par
 // 소자 읽기 저항 (0.1 V, RL 포함) [ohm]
 export function deviceRead(filaments: FilamentGeom[], p: Params, gs: GridSpec = DEFAULT_GRID, vRead = 0.1): number {
 	return vRead / deviceIv([vRead], filaments, p, gs)[0];
+}
+
+// ---------------------------------------------------------------- 사이클 사이 상태 (A46)
+export interface StateMetrics {
+	rMin: number;	// 가장 가는 곳 반경 [m] (RESET 후 갭의 크기)
+	neckLen: number;	// 반경이 양 끝 평균 반경의 절반 이하인 길이 [m] (잘록·끊긴 구간 길이)
+	rMean: number;	// 길이 방향 평균 반경 [m]
+	area: number;	// 가장 가는 곳 단면적 π r_min² [m²]
+}
+
+export function stateMetrics(rb: ArrayLike<number>, g: Grid): StateMetrics {
+	const n = rb.length;
+	let rMin = Infinity;
+	let sum = 0;
+	for (let j = 0; j < n; j++) {
+		rMin = Math.min(rMin, rb[j]);
+		sum += rb[j];
+	}
+	const ends = 0.5 * (rb[0] + rb[n - 1]);
+	let neckLen = 0;
+	for (let j = 0; j < n; j++) if (rb[j] <= 0.5 * ends) neckLen += g.zFaces[j + 1] - g.zFaces[j];
+	return { rMin, neckLen, rMean: sum / n, area: Math.PI * rMin * rMin };
 }

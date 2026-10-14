@@ -1,6 +1,6 @@
 // CSV 내보내기. PNG는 charts.ts의 downloadPng.
 
-import { type CycleSummary, type JobOutput } from "../model";
+import { stateMetrics, type CycleSummary, type Grid, type JobOutput } from "../model";
 
 function download(name: string, text: string): void {
 	const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
@@ -40,9 +40,25 @@ export function resultCsv(out: JobOutput): string {
 	return rows.join("\n");
 }
 
-export function summaryCsv(summary: CycleSummary[]): string {
-	const rows = ["cycle,r_hrs_ohm,r_lrs_ohm,v_reset_V,i_reset_A,v_set_V"];
-	summary.forEach((s, c) => rows.push(`${c + 1},${s.rHrs},${s.rLrs},${s.vReset},${s.iReset},${s.vSet}`));
+// 사이클 요약. 상태 열 (A46): RESET 후 가장 가는 곳 반경·잘록 길이, SET 후 평균 반경
+export function summaryCsv(summary: CycleSummary[], g: Grid): string {
+	const rows = ["cycle,r_hrs_ohm,r_lrs_ohm,v_reset_V,i_reset_A,v_set_V,r_min_hrs_m,neck_len_hrs_m,r_mean_lrs_m"];
+	summary.forEach((s, c) => {
+		const h = stateMetrics(s.rbHrs, g);
+		const l = stateMetrics(s.rbLrs, g);
+		rows.push(`${c + 1},${s.rHrs},${s.rLrs},${s.vReset},${s.iReset},${s.vSet},${h.rMin},${h.neckLen},${l.rMean}`);
+	});
+	return rows.join("\n");
+}
+
+// 사이클마다 RESET 후 / SET 후 형상 r_b(z)
+export function stateCsv(summary: CycleSummary[], g: Grid): string {
+	const rows = ["cycle,state,z_m,rb_m"];
+	summary.forEach((s, c) => {
+		for (const [name, rb] of [["after_reset", s.rbHrs], ["after_set", s.rbLrs]] as const) {
+			for (let j = 0; j < rb.length; j++) rows.push(`${c + 1},${name},${g.zc[j]},${rb[j]}`);
+		}
+	});
 	return rows.join("\n");
 }
 

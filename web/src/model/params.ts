@@ -26,6 +26,9 @@ export interface Params {
 	Z: number;	// 전하수 [-]
 	RL: number;	// 전극 접촉 저항 [ohm]
 	CP: number;	// 전극 기생 정전용량 [F]
+	tEl: number;	// 전극 두께 [m]. 0이면 [R]의 이상적 전극 (A41)
+	kappaEl: number;	// 전극 열전도도 [W/(K m)]
+	rhoEl: number;	// 전극 비저항 [ohm*m], 온도 무관 (A41)
 	nF: number;	// 단위면적당 필라멘트 수 [1/m^2] (A10, A22)
 	aCell: number;	// 셀 면적 [m^2] (A10)
 }
@@ -49,6 +52,9 @@ export const DEFAULT: Readonly<Params> = Object.freeze({
 	Z: 1,	// [-]
 	RL: 20,	// [ohm], [M] Table 3
 	CP: 20e-15,	// [F], [M] Table 3
+	tEl: 0,	// [m], 이상적 전극 [R]
+	kappaEl: 11.9,	// [W/(K m)], TiN [Samani 2013, Thin Solid Films 537, 108]
+	rhoEl: 125e-8,	// [ohm*m] (125 uOhm*cm), DC 반응성 스퍼터 TiN 전극 [doi:10.1007/s10854-018-9066-4]
 	nF: 1e14,	// [1/m^2] (A22)
 	aCell: 1e-14,	// [m^2], 100 nm x 100 nm → N = 1
 });
@@ -58,12 +64,16 @@ export function filamentCount(p: Params): number {
 	return Math.max(1, Math.round(p.nF * p.aCell));
 }
 
+// TiN 전극 프리셋 (A41). 두께 50 nm는 가정값: 실험 소자의 전극 두께로 바꿔 쓸 것
+export const TIN_ELECTRODE: Readonly<Pick<Params, "tEl" | "kappaEl" | "rhoEl">> = Object.freeze({ tEl: 50e-9, kappaEl: 11.9, rhoEl: 125e-8 });
+
 export const RS_SET = 3e3;	// SET 동작 compliance 저항 기본값 [ohm] (A15)
 
 export interface GridSpec {
 	drFine: number;	// CF 근처 반경 방향 칸 [m]
 	growth: number;	// 바깥쪽 칸 증가 비율 [-]
 	nz: number;	// 길이 방향 칸 수
+	elGrowth: number;	// 전극층 칸 증가 비율 [-] (A41)
 }
 
-export const DEFAULT_GRID: Readonly<GridSpec> = Object.freeze({ drFine: 4e-9, growth: 1.15, nz: 40 });	// (A35)
+export const DEFAULT_GRID: Readonly<GridSpec> = Object.freeze({ drFine: 4e-9, growth: 1.15, nz: 40, elGrowth: 1.6 });	// (A35, A41)

@@ -15,8 +15,8 @@
 import { describe, expect, test } from "vitest";
 import { loadCsv } from "./golden";
 import {
-	DEFAULT, DEFAULT_GRID, FieldSolver, deviceRead, ivFixedState, makeGrid, neckProfile, pulseWaveform, readResistance,
-	resetRampWaveform, simulate, sweepWaveform, type SimOptions, type Waveform,
+	DEFAULT, DEFAULT_GRID, FieldSolver, TIN_ELECTRODE, deviceRead, ivFixedState, makeGrid, neckProfile, pulseWaveform, rampWaveform,
+	readResistance, resetRampWaveform, simulate, sweepWaveform, type Params, type SimOptions, type Waveform,
 } from "../src/model";
 
 const P = DEFAULT;
@@ -64,6 +64,19 @@ describe("golden: 정상 상태", () => {
 		}
 	});
 
+	test("fields_tin.csv: TiN 전극층 (A41)", () => {
+		const f = loadCsv("fields_tin.csv");
+		for (let k = 0; k < f.v_V.length; k++) {
+			const p: Params = { ...P, ...TIN_ELECTRODE, aCell: f.A_cell_m2[k], nF: 1 / f.A_cell_m2[k] };
+			const g = makeGrid(p, DEFAULT_GRID);
+			const rb = f.neck_len_m[k] > 0 ? neckProfile(f.r_neck_m[k], f.neck_len_m[k], p) : new Float64Array(g.nz).fill(f.r_neck_m[k]);
+			const fld = new FieldSolver(g, p, rb).solve(f.v_V[k]);
+			expect(Math.abs(fld.I - f.i_A[k]) / f.i_A[k]).toBeLessThan(1e-8);
+			expect(Math.abs(fld.tMax - f.T_max_K[k]) / f.T_max_K[k]).toBeLessThan(1e-8);
+			expect(Math.abs(fld.P - f.P_W[k]) / f.P_W[k]).toBeLessThan(1e-8);
+		}
+	});
+
 	test("read_resistance.csv: 0.1 V 읽기 저항", () => {
 		const r = loadCsv("read_resistance.csv");
 		for (let k = 0; k < r.R_ohm.length; k++) {
@@ -94,17 +107,18 @@ describe("golden: 정상 상태", () => {
 
 describe("golden: 과도 응답", () => {
 	const hp = loadCsv("hrs_profile.csv");
-	const cases: [string, Waveform, ArrayLike<number> | null, SimOptions][] = [
+	const cases: [string, Waveform, ArrayLike<number> | null, SimOptions, Params?][] = [
 		["reset_sweep_4Vps.csv", resetRampWaveform(1.6, 0.4), null, {}],
 		["cycle_sweep.csv", sweepWaveform(1.6, 4.0, 0.25), null, { rs: 3e3 }],
 		["cycle_sweep_cc.csv", sweepWaveform(1.6, 4.0, 0.25), null, { iCc: 1e-3 }],
+		["reset_ramp_tin.csv", rampWaveform("reset", 1.6, 4.0), null, {}, { ...P, ...TIN_ELECTRODE }],
 		["pulse_reset.csv", pulseWaveform("reset", 3.0, 10e-9, 10e-6), null, { includeCp: true }],
 		["pulse_set.csv", pulseWaveform("set", 2.5, 10e-9, 1e-6), Float64Array.from(hp.rb_m), { includeCp: true, rs: 3e3 }],
 	];
-	for (const [file, wf, rb0, opt] of cases) {
+	for (const [file, wf, rb0, opt, params] of cases) {
 		test(file, () => {
 			const g = loadCsv(file);
-			const r = simulate(wf, rb0, P, opt);
+			const r = simulate(wf, rb0, params ?? P, opt);
 			const imax = Math.max(...g.i_A.map(Math.abs));
 			expect(windowedRelErr(r.t, r.i, g.t_s, g.i_A, 1e-3 * imax)).toBeLessThan(1e-5);
 			expect(windowedRelErr(r.t, r.rMin, g.t_s, g.r_min_m, 1e-9)).toBeLessThan(1e-5);

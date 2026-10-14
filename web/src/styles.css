@@ -306,6 +306,19 @@ summary:focus-visible {
 	margin: 2px 0 12px -4px;
 }
 
+.preset {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 10px;
+	align-items: center;
+	margin: 0 0 12px;
+}
+
+.preset-note {
+	font-size: 12px;
+	color: var(--text-2);
+}
+
 .count {
 	margin: 0 0 10px;
 	font-size: 12.5px;

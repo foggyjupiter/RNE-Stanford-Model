@@ -294,6 +294,73 @@ export function readChart(div: HTMLElement, lrs: number[], hrs: number[]): void 
 	}));
 }
 
+// ---------------------------------------------------------------- 사이클 사이 상태 (A46)
+// RESET 후 / SET 후 CF 경계 반경 r_b(z). 가로 반경, 세로 높이 (형상 지도와 같은 방향)
+export interface StateProfile {
+	rb: ArrayLike<number>;	// [m]
+	kind: "hrs" | "lrs";
+	cycle: number;	// 1부터
+}
+
+export function stateProfileChart(div: HTMLElement, zFaces: ArrayLike<number>, profiles: StateProfile[]): void {
+	const th = theme();
+	const nCyc = Math.max(...profiles.map((s) => s.cycle));
+	const op = overlayOpacity(nCyc);
+	const shown = new Set<string>();
+	const data: Plotly.Data[] = profiles.map((s) => {
+		// 칸마다 계단 모양: (r_j, z_j) ~ (r_j, z_{j+1})
+		const x: number[] = [];
+		const y: number[] = [];
+		for (let k = 0; k < s.rb.length; k++) {
+			x.push(s.rb[k] * 1e9, s.rb[k] * 1e9);
+			y.push(zFaces[k] * 1e9, zFaces[k + 1] * 1e9);
+		}
+		const name = s.kind === "hrs" ? "RESET 후" : "SET 후";
+		const first = !shown.has(name);
+		shown.add(name);
+		return {
+			type: "scatter",
+			mode: "lines",
+			x,
+			y,
+			name,
+			legendgroup: name,
+			showlegend: first,
+			opacity: s.cycle === nCyc ? 1 : op,
+			line: { color: s.kind === "hrs" ? th.s2 : th.s1, width: s.cycle === nCyc ? 2 : 1.25 },
+			hovertemplate: `${name} · 사이클 ${s.cycle}<br>r = %{x:.2f} nm<br>z = %{y:.0f} nm<extra></extra>`,
+		};
+	});
+	let rMax = 0;
+	for (const s of profiles) for (let k = 0; k < s.rb.length; k++) rMax = Math.max(rMax, s.rb[k] * 1e9);
+	draw(div, data, layout(th, { title: "필라멘트 반경 (nm)", range: [0, 1.05 * rMax] }, { title: "높이 z (nm)" }, {
+		showlegend: true,
+		hovermode: "closest",
+		margin: { l: 56, r: 16, t: 28, b: 44 },
+	}));
+}
+
+// 사이클별 갭: RESET 후 가장 가는 곳 반경, SET 후 평균 반경
+export function stateTrendChart(div: HTMLElement, rMinHrs: number[], rMeanLrs: number[]): void {
+	const th = theme();
+	const idx = rMinHrs.map((_, k) => k + 1);
+	const pts = (name: string, ys: number[], color: string, symbol: string): Plotly.Data => ({
+		type: "scatter",
+		mode: idx.length > 1 ? "lines+markers" : "markers",
+		name,
+		x: idx,
+		y: ys.map((r) => r * 1e9),
+		line: { color, width: 1.5 },
+		marker: { color, size: 9, symbol, line: { color: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(), width: 2 } },
+		hovertemplate: `${name} · 사이클 %{x}<br>%{y:.2f} nm<extra></extra>`,
+	});
+	draw(div, [pts("SET 후 평균 반경", rMeanLrs, th.s1, "circle"), pts("RESET 후 가장 가는 곳", rMinHrs, th.s2, "square")], layout(th, { title: "사이클", tickvals: idx.length <= 12 ? idx : undefined }, { title: "반경 (nm)", log: true }, {
+		showlegend: true,
+		hovermode: "closest",
+		margin: { l: 56, r: 16, t: 28, b: 44 },
+	}));
+}
+
 // ---------------------------------------------------------------- 소자 간 몬테카를로
 // 읽기 저항 분포 (단일 계열, log10 R 구간)
 export function mcHistogramChart(div: HTMLElement, R: ArrayLike<number>): void {

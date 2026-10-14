@@ -29,6 +29,8 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # 약 10�
 - `python/rram_model.py`: 모델 본체 (2차원 장 풀이, 경계 이동, 회로 풀이, 읽기, 변동성)
 - `python/reference.ipynb`: 검증 노트북 ([6] Fig. 2–5 재현, 격자 수렴, unipolar 사이클, compliance 의존성, 펄스, 읽기, 고정 상태, 변동성)
 - `python/golden/`: 2단계용 정답 CSV (`golden/README.md` 참고)
+- `python/inverse.py`: 측정 I-V에서 파라미터 역산 (Russo [7]의 추출법 + 2차원 모델). `python/inverse.ipynb`에 가상 측정으로 한 검증과 사용법
+- `docs/실험정보_요청.md`: 역산에 필요한 실험 정보·데이터 목록
 
 ## 2단계 — TypeScript 코어
 
@@ -55,7 +57,8 @@ npm run build     # dist/ 에 정적 파일 생성
 - 모드: **I-V 스윕**(RESET → SET) / **펄스**(RESET 또는 SET) / **쓰기-읽기 시퀀스** / **고정 상태**(잘록 구간 반경·길이를 정해 읽기 I-V)
 - **소자 간 몬테카를로 (고정 상태 모드의 "무작위성 켜기"):** 소자마다 필라멘트 개수(포아송), 필라멘트마다 두께·갭(잘록 구간) 반경·길이(로그정규)를 무작위로 뽑아 읽기 저항 분포, 필라멘트 수–저항 관계, I-V 산포를 보여 줍니다. 소자 100개에 약 4초 (ASSUMPTIONS A38, A39)
 - 결과: I-V, 인가 전압·전류·가장 가는 곳 반경·최고 온도 대 시간, **필라멘트 형상과 온도 분포 지도**([6] Fig. 2와 같은 그림)
-- 파라미터 패널: RESET(열 용해) / SET(측면 성장) / 소자 형상 / 물성 / 기생 성분 / 필라멘트 밀도
+- 파라미터 패널: RESET(열 용해) / SET(측면 성장) / 소자 형상 / 물성 / **전극(TiN 프리셋)** / 기생 성분 / 필라멘트 밀도
+- SET 전류 제한: 직렬 저항 R_s 또는 측정기처럼 전류를 자르는 **CC** (A40). I-V 스윕은 RESET·SET 구간을 색으로 나눠 그립니다
 - 변동성: 켜면 사이클을 겹쳐 그리고 LRS/HRS 분포 히스토그램. 2차원 계산이라 **스윕 한 사이클에 약 15초** 걸려서, 켤 때 사이클 수가 1이면 3으로 올립니다. 진행 막대와 취소 버튼이 있습니다.
 - 내보내기: 결과 CSV, 사이클 요약 CSV, 차트별 PNG. 라이트/다크 모드
 
@@ -89,3 +92,7 @@ npm run build     # dist/ 에 정적 파일 생성
 - [5] X. Guan, S. Yu, and H.-S. P. Wong, "A SPICE compact model of metal oxide resistive switching memory with variations," IEEE EDL, pp. 1405–1407, 2012.
 - [6] U. Russo, D. Ielmini, C. Cagli, and A. L. Lacaita, "Self-accelerated thermal dissolution model for reset programming in unipolar resistive-switching memory (RRAM) devices," IEEE TED, vol. 56, no. 2, pp. 193–200, 2009. DOI 10.1109/TED.2008.2010584
 - [7] U. Russo, D. Ielmini, C. Cagli, and A. L. Lacaita, "Filament conduction and reset mechanism in NiO-based resistive-switching memory (RRAM) devices," IEEE TED, vol. 56, no. 2, pp. 186–192, 2009. DOI 10.1109/TED.2008.2010583
+- [8] M. K. Samani et al., "Thermal conductivity of titanium aluminum silicon nitride coatings deposited by lateral rotating cathode arc," Thin Solid Films, vol. 537, pp. 108–112, 2013. (TiN 열전도도 11.9 W/(K·m))
+- [9] N. Sun et al., "DC reactively sputtered TiNx thin films for capacitor electrodes," J. Mater. Sci.: Mater. Electron., vol. 29, pp. 10170–10176, 2018. DOI 10.1007/s10854-018-9066-4 (TiN 비저항 125 µΩ·cm)
+- [10] P. Goel, C. Kauppinen, R. Raju, and I. Tittonen, "Thermoelectric and electronic transport properties of thermal and plasma-enhanced ALD grown titanium nitride thin films," Nanoscale Adv., vol. 8, no. 2, pp. 612–622, 2026. DOI 10.1039/D5NA00914F (ALD TiN 열전도도 7.0–27 W/(K·m))
+- [11] D. Niraula and V. G. Karpov, "Heat transfer in filamentary RRAM devices," IEEE TED, vol. 64, no. 10, pp. 4106–4113, 2017.

@@ -1,11 +1,11 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, filamentCount, type Job, type JobOutput, type FixedOutput, type Params, type SimResult, type TransientOutput } from "./model";
+import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
-import { downloadPng, histogramChart, ivChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
+import { downloadPng, histogramChart, ivChart, stateProfileChart, stateTrendChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
-import { downloadCsv, resultCsv, summaryCsv } from "./ui/export";
+import { downloadCsv, resultCsv, stateCsv, summaryCsv } from "./ui/export";
 import { meanStd, median, siFormat, timeUnit } from "./ui/format";
 import { PARAM_GROUPS, VAR_FIELDS, type ParamMeta } from "./ui/meta";
 import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Limit, type Mode } from "./ui/state";
@@ -337,6 +337,18 @@ function buildParams(): void {
 			d.append(f.el);
 			return f;
 		});
+		for (const pr of g.presets ?? []) {
+			const row = el("div", "preset");
+			const btn = el("button", "btn", pr.label);
+			btn.type = "button";
+			btn.addEventListener("click", () => {
+				state.params = { ...state.params, ...pr.values };
+				for (const f of fields) f.refresh();
+				schedule(0);
+			});
+			row.append(btn, el("span", "preset-note", pr.note));
+			d.append(row);
+		}
 		if (g.id === "density") {
 			countEl = el("p", "count");
 			d.append(countEl);
@@ -537,6 +549,7 @@ function render(out: JobOutput): void {
 	const stats = $("stats");
 	stats.replaceChildren();
 	$("csv-summary").hidden = out.kind === "fixed" || lastMode === "pulse";
+	$("csv-state").hidden = out.kind === "fixed";
 	if (out.kind === "fixed") {
 		renderFixed(out, stats);
 		return;
@@ -546,13 +559,39 @@ function render(out: JobOutput): void {
 	else renderSequence(out, stats);
 }
 
+// 사이클 사이 상태 카드 (A46): RESET 후 / SET 후 형상, 여러 사이클이면 갭 추이
+function stateCards(n: number): CardSpec[] {
+	const specs: CardSpec[] = [{ id: "state", title: "RESET 후 / SET 후 필라멘트 형상", sub: n > 1 ? `${n}개 사이클 겹침, 진한 선이 마지막` : "r_b(z), 축 대칭" }];
+	if (n > 1) specs.push({ id: "trend", title: "사이클별 갭", sub: "RESET 후 가장 가는 곳 / SET 후 평균 반경" });
+	return specs;
+}
+
+function drawState(out: TransientOutput): StateMetrics {
+	const g = out.cycles[out.cycles.length - 1].grid;
+	const profiles = out.summary.flatMap((c, k) => [
+		{ rb: c.rbHrs, kind: "hrs" as const, cycle: k + 1 },
+		{ rb: c.rbLrs, kind: "lrs" as const, cycle: k + 1 },
+	]);
+	stateProfileChart(cards.get("state")!, g.zFaces, profiles);
+	const mh = out.summary.map((c) => stateMetrics(c.rbHrs, g));
+	const ml = out.summary.map((c) => stateMetrics(c.rbLrs, g));
+	if (cards.has("trend")) stateTrendChart(cards.get("trend")!, mh.map((m) => m.rMin), ml.map((m) => m.rMean));
+	return mh[mh.length - 1];
+}
+
+function gapStat(m: StateMetrics): HTMLElement {
+	return stat("갭 (RESET 후)", `${(m.rMin * 1e9).toFixed(2)} nm`, `가장 가는 곳 반경, 잘록 길이 ${(m.neckLen * 1e9).toFixed(0)} nm`);
+}
+
 function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 	const n = out.cycles.length;
 	const multi = n > 1;
 	const specs: CardSpec[] = [{ id: "iv", title: "I-V", sub: multi ? `${n}개 사이클 겹침` : "|I|, 로그 눈금", wide: true, tall: true }];
 	if (multi) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: "0.1 V 읽기", wide: true });
+	specs.push(...stateCards(n));
 	specs.push(...timeCards(multi ? "마지막 사이클" : undefined));
 	ensureCards(specs);
+	const gm = drawState(out);
 	sweepIvChart(cards.get("iv")!, out.cycles.map((r) => ({ v: r.vApp, i: r.i, split: r.split ?? r.t.length - 1 })));
 	const last = out.cycles[n - 1];
 	drawTime(Array.from(last.t), Array.from(last.vApp), Array.from(last.i), Array.from(last.rMin), Array.from(last.T), last.hot, last.grid, true);
@@ -569,6 +608,7 @@ function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 			stat("R_HRS", siFormat(median(hrs), "Ω"), "중앙값"),
 			stat("R_LRS", siFormat(median(lrs), "Ω"), "중앙값"),
 			stat("HRS / LRS", ratio(median(hrs) / median(lrs))),
+			gapStat(gm),
 		);
 	} else {
 		const c = s[0];
@@ -578,6 +618,7 @@ function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 			stat("R_HRS", siFormat(c.rHrs, "Ω"), "RESET 후, 0.1 V"),
 			stat("R_LRS", siFormat(c.rLrs, "Ω"), "SET 후, 0.1 V"),
 			stat("HRS / LRS", ratio(c.rHrs / c.rLrs)),
+			gapStat(gm),
 			stat("T_max", `${maxOf(last.T).toFixed(0)} K`),
 		);
 	}
@@ -586,13 +627,15 @@ function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 function renderPulse(out: TransientOutput, stats: HTMLElement): void {
 	const r = out.cycles[0];
 	const isSet = state.pulse.op === "set";
-	ensureCards(timeCards());
+	ensureCards([...stateCards(1), ...timeCards()]);
+	const gm = drawState(out);
 	drawTime(Array.from(r.t), Array.from(r.vApp), Array.from(r.i), Array.from(r.rMin), Array.from(r.T), r.hot, r.grid, false);
 	stats.append(
 		stat("R 펄스 전", siFormat(out.rStart, "Ω"), isSet ? "RESET 스윕 뒤 HRS" : "포밍된 LRS"),
 		stat("R 펄스 후", siFormat(out.rEnd, "Ω"), "0.1 V 읽기"),
 		stat("변화", ratio(isSet ? out.rStart / out.rEnd : out.rEnd / out.rStart), isSet ? "R 감소" : "R 증가"),
 		stat("|I| 최대", siFormat(maxOf(Array.from(r.i, Math.abs)), "A")),
+		gapStat(gm),
 		stat("T_max", `${maxOf(r.T).toFixed(0)} K`),
 	);
 }
@@ -602,8 +645,10 @@ function renderSequence(out: TransientOutput, stats: HTMLElement): void {
 	const multi = n > 1;
 	const specs: CardSpec[] = [{ id: "read", title: "읽기 저항", sub: `사이클마다 RESET 후 / SET 후, ${state.sequence.vRead} V`, wide: true }];
 	if (multi && state.variabilityOn) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: `${state.sequence.vRead} V 읽기`, wide: true });
+	specs.push(...stateCards(n));
 	specs.push(...timeCards(multi ? `${n}개 사이클 연속` : undefined));
 	ensureCards(specs);
+	const gm = drawState(out);
 	const lrs = out.summary.map((c) => c.rLrs);
 	const hrs = out.summary.map((c) => c.rHrs);
 	readChart(cards.get("read")!, lrs, hrs);
@@ -618,6 +663,7 @@ function renderSequence(out: TransientOutput, stats: HTMLElement): void {
 		stat("R_HRS", siFormat(mH, "Ω"), multi ? "중앙값" : "RESET 후 읽기"),
 		stat("R_LRS", siFormat(mL, "Ω"), multi ? "중앙값" : "SET 후 읽기"),
 		stat("HRS / LRS", ratio(mH / mL)),
+		gapStat(gm),
 		stat("T_max", `${Math.max(...out.cycles.map((c) => maxOf(c.T))).toFixed(0)} K`),
 	);
 }
@@ -660,12 +706,19 @@ function renderFixed(out: FixedOutput, stats: HTMLElement): void {
 }
 
 // ---------------------------------------------------------------- 내보내기
+function lastGrid(out: TransientOutput): Grid {
+	return out.cycles[out.cycles.length - 1].grid;
+}
+
 function setupExport(): void {
 	$("csv").addEventListener("click", () => {
 		if (lastOut) downloadCsv(`rram_${lastMode}.csv`, resultCsv(lastOut));
 	});
 	$("csv-summary").addEventListener("click", () => {
-		if (lastOut && lastOut.kind === "transient") downloadCsv(`rram_${lastMode}_summary.csv`, summaryCsv(lastOut.summary));
+		if (lastOut && lastOut.kind === "transient") downloadCsv(`rram_${lastMode}_summary.csv`, summaryCsv(lastOut.summary, lastGrid(lastOut)));
+	});
+	$("csv-state").addEventListener("click", () => {
+		if (lastOut && lastOut.kind === "transient") downloadCsv(`rram_${lastMode}_state.csv`, stateCsv(lastOut.summary, lastGrid(lastOut)));
 	});
 	$("cancel").addEventListener("click", () => {
 		client.cancel();

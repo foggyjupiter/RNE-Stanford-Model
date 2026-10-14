@@ -75,6 +75,8 @@ export interface CycleSummary {
 	vReset: number;	// [V]
 	iReset: number;	// [A]
 	vSet: number;	// [V], 스윕만
+	rbHrs: Float64Array;	// RESET 후 CF 경계 반경 r_b(z) [m] (A46)
+	rbLrs: Float64Array;	// SET 후 CF 경계 반경 r_b(z) [m]
 }
 
 export interface TransientOutput {
@@ -204,7 +206,10 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 		return {
 			kind: "transient",
 			cycles: [r],
-			summary: [{ rLrs: isSet ? r1 : r0, rHrs: isSet ? r0 : r1, vReset: rp.v, iReset: rp.i, vSet: NaN }],
+			summary: [{
+				rLrs: isSet ? r1 : r0, rHrs: isSet ? r0 : r1, vReset: rp.v, iReset: rp.i, vSet: NaN,
+				rbHrs: isSet ? rb0! : r.rbEnd, rbLrs: isSet ? r.rbEnd : new Float64Array(r.rbEnd.length).fill(p.phi0 / 2),
+			}],
 			rStart: r0,
 			rEnd: r1,
 		};
@@ -248,7 +253,7 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 		}
 		rb = r2.rbEnd;
 		cycles.push(concatResults([r1, r2]));
-		summary.push({ rLrs, rHrs, vReset: rp.v, iReset: rp.i, vSet });
+		summary.push({ rLrs, rHrs, vReset: rp.v, iReset: rp.i, vSet, rbHrs: r1.rbEnd, rbLrs: r2.rbEnd });
 		onProgress?.(c + 1, job.cycles);
 	}
 	return { kind: "transient", cycles, summary, rStart, rEnd: summary[summary.length - 1].rLrs };

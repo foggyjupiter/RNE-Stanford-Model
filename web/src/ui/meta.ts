@@ -2,7 +2,7 @@
 // 값의 근거: [R] Russo et al. TED 2009 Table I (기본값과 참고문헌 열의 문헌값), [M] 매뉴얼 Table 3.
 // 근거가 없는 범위는 note에 가정 번호를 단다 (A37).
 
-import { EV, type Params, type Variability } from "../model";
+import { EV, TIN_ELECTRODE, type Params, type Variability } from "../model";
 
 export interface FieldMeta<K extends string> {
 	key: K;
@@ -20,11 +20,18 @@ export interface FieldMeta<K extends string> {
 export type ParamMeta = FieldMeta<keyof Params>;
 export type VarMeta = FieldMeta<keyof Variability>;
 
+export interface ParamPreset {
+	label: string;	// 버튼 글자
+	values: Partial<Params>;
+	note: string;	// 출처
+}
+
 export interface ParamGroup {
 	id: string;
 	title: string;
 	hint?: string;
 	items: ParamMeta[];
+	presets?: ParamPreset[];
 }
 
 export const PARAM_GROUPS: ParamGroup[] = [
@@ -69,6 +76,23 @@ export const PARAM_GROUPS: ParamGroup[] = [
 			{ key: "kappaCf", symbol: "κ<sub>CF</sub>", label: "CF 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 50 },
 			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 30, note: "문헌 1–10" },
 			{ key: "T0", symbol: "T<sub>0</sub>", label: "소자 온도", unit: "K", scale: 1, min: 150, max: 450 },
+		],
+	},
+	{
+		id: "electrode",
+		title: "전극",
+		hint: "두께 0이면 이상적 열 배출 [6]. 두께를 주면 전극층까지 2차원으로 푼다 (A41, [11])",
+		items: [
+			{ key: "tEl", symbol: "t<sub>el</sub>", label: "전극 두께 (위·아래 각각)", unit: "nm", scale: 1e-9, min: 0, max: 200, note: "실험값 필요" },
+			{ key: "kappaEl", symbol: "κ<sub>el</sub>", label: "전극 열전도도", unit: "W/(K·m)", scale: 1, min: 5, max: 30, note: "TiN 7–27 [8], [10]" },
+			{ key: "rhoEl", symbol: "ρ<sub>el</sub>", label: "전극 비저항", unit: "µΩ·cm", scale: 1e-8, min: 25, max: 500, log: true, note: "TiN 125 [9]" },
+		],
+		presets: [
+			{
+				label: "TiN 전극 (문헌값)",
+				values: { ...TIN_ELECTRODE },
+				note: "κ 11.9 W/(K·m) [8], ρ 125 µΩ·cm [9]. 두께 50 nm는 가정 (실험값으로 바꿀 것)",
+			},
 		],
 	},
 	{

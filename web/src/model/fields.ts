@@ -1,7 +1,7 @@
 // 2차원 원통 좌표 (r, z) 정상 상태 전위·온도 풀이와 CF 경계 이동 속도. python/rram_model.py를 옮긴 것.
 // [R] 식 (1) 전위, (2) 열, (4) 저항의 온도 의존, (5) 열 용해. [D] 식 (2) SET 측면 성장.
 
-import { K_B, Q_E, type GridSpec, type Params } from "./params";
+import { DEFAULT_GRID, K_B, Q_E, type GridSpec, type Params } from "./params";
 
 export interface Grid {
 	rFaces: Float64Array;	// 반경 방향 셀 경계 [m]
@@ -33,6 +33,47 @@ export function makeGrid(p: Params, gs: GridSpec): Grid {
 	for (let i = 0; i < nr; i++) rc[i] = 0.5 * (rFaces[i] + rFaces[i + 1]);
 	for (let j = 0; j < nz; j++) zc[j] = 0.5 * (zFaces[j] + zFaces[j + 1]);
 	return { rFaces, zFaces, rc, zc, nr, nz };
+}
+
+// 전극층의 반경 방향 계산 범위 [m] (A41): 셀 등가 반경까지, 단 Rdom + 10 tEl에서 자름, 최소 Rdom
+export function electrodeRadius(p: Params): number {
+	return Math.max(p.Rdom, Math.min(Math.sqrt(p.aCell / Math.PI), p.Rdom + 10 * p.tEl));
+}
+
+// 전극층 안의 칸 경계 (산화막 면에서 잰 거리, 0 .. tEl) [m]. 첫 칸 dz0, 바깥으로 elGrowth배씩
+function electrodeFaces(p: Params, gs: GridSpec, dz0: number): number[] {
+	const faces = [0];
+	let d = dz0;
+	while (faces[faces.length - 1] < p.tEl - 1e-15) {
+		faces.push(Math.min(faces[faces.length - 1] + d, p.tEl));
+		d *= gs.elGrowth;
+	}
+	return faces;
+}
+
+// 전극층까지 넣은 열·전기 계산용 격자와 아래 전극 칸 수 (A41). tEl = 0이면 g 그대로.
+// 반경은 R_dom 밖에 칸을 덧붙여 전극층을 electrodeRadius까지 넓힌다 (그 구간의 산화막 행은 계산에서 뺀다)
+export function fullGrid(g: Grid, p: Params, gs: GridSpec): { gf: Grid; nb: number } {
+	if (p.tEl <= 0) return { gf: g, nb: 0 };
+	const ef = electrodeFaces(p, gs, g.zFaces[1] - g.zFaces[0]);
+	const zf: number[] = [];
+	for (let k = ef.length - 1; k >= 0; k--) zf.push(-ef[k]);
+	for (let k = 1; k < g.zFaces.length - 1; k++) zf.push(g.zFaces[k]);
+	for (let k = 0; k < ef.length; k++) zf.push(p.L0 + ef[k]);
+	const rf = Array.from(g.rFaces);
+	let d = rf[rf.length - 1] - rf[rf.length - 2];
+	const rEl = electrodeRadius(p);
+	while (rf[rf.length - 1] < rEl - 1e-15) {
+		d *= gs.elGrowth;
+		rf.push(Math.min(rf[rf.length - 1] + d, rEl));
+	}
+	const nr = rf.length - 1;
+	const nz = zf.length - 1;
+	const rc = new Float64Array(nr);
+	const zc = new Float64Array(nz);
+	for (let i = 0; i < nr; i++) rc[i] = 0.5 * (rf[i] + rf[i + 1]);
+	for (let j = 0; j < nz; j++) zc[j] = 0.5 * (zf[j] + zf[j + 1]);
+	return { gf: { rFaces: Float64Array.from(rf), zFaces: Float64Array.from(zf), rc, zc, nr, nz }, nb: ef.length - 1 };
 }
 
 // 셀별 CF 단면적 비율 (nz*nr, 행 우선). 경계가 걸친 셀은 면적 비율로 섞는다 (A30)
@@ -112,7 +153,8 @@ interface Assembled {
 // -div(k grad u) 유한체적 행렬. 위/아래 전극은 Dirichlet, 축과 옆면은 Neumann [R]
 function assemble(g: Grid, k: Float64Array): Assembled {
 	const { nr, nz, rFaces: rf, rc } = g;
-	const dz = g.zFaces[1] - g.zFaces[0];	// 균일 격자
+	const dz = new Float64Array(nz);
+	for (let j = 0; j < nz; j++) dz[j] = g.zFaces[j + 1] - g.zFaces[j];
 	const gr = new Float64Array(nz * (nr - 1));
 	const gz = new Float64Array((nz - 1) * nr);
 	const gTop = new Float64Array(nr);
@@ -120,16 +162,16 @@ function assemble(g: Grid, k: Float64Array): Assembled {
 	const A = new BandSPD(nz * nr, nr);
 	for (let j = 0; j < nz; j++) {
 		for (let i = 0; i < nr - 1; i++) {
-			const area = 2 * Math.PI * rf[i + 1] * dz;
+			const area = 2 * Math.PI * rf[i + 1] * dz[j];
 			const v = area / ((rf[i + 1] - rc[i]) / k[j * nr + i] + (rc[i + 1] - rf[i + 1]) / k[j * nr + i + 1]);
 			gr[j * (nr - 1) + i] = v;
 		}
 	}
 	for (let i = 0; i < nr; i++) {
 		const ring = Math.PI * (rf[i + 1] * rf[i + 1] - rf[i] * rf[i]);
-		for (let j = 0; j < nz - 1; j++) gz[j * nr + i] = ring / (0.5 * dz / k[j * nr + i] + 0.5 * dz / k[(j + 1) * nr + i]);
-		gBot[i] = ring * k[i] / (0.5 * dz);
-		gTop[i] = ring * k[(nz - 1) * nr + i] / (0.5 * dz);
+		for (let j = 0; j < nz - 1; j++) gz[j * nr + i] = ring / (0.5 * dz[j] / k[j * nr + i] + 0.5 * dz[j + 1] / k[(j + 1) * nr + i]);
+		gBot[i] = ring * k[i] / (0.5 * dz[0]);
+		gTop[i] = ring * k[(nz - 1) * nr + i] / (0.5 * dz[nz - 1]);
 	}
 	for (let j = 0; j < nz; j++) {
 		for (let i = 0; i < nr; i++) {
@@ -163,24 +205,52 @@ export interface Fields {
 	tMax: number;	// 최고 온도 [K]
 }
 
-// 한 CF 형상(rb)에 대해 정상 상태 전위·온도를 푸는 도우미. 열 행렬 분해를 재사용한다
+const OFF = 1e-9;	// 계산에서 빼는 셀의 전도도 배율 [-] (A41)
+
+// 한 CF 형상(rb)에 대해 정상 상태 전위·온도를 푸는 도우미. 열 행렬 분해를 재사용한다.
+// 전극층이 있으면(tEl > 0) 산화막 위아래에 전극 행을 붙인 격자에서 풀고, 산화막 부분만 돌려준다 (A41)
 export class FieldSolver {
 	private readonly fr: Float64Array;
 	private readonly th: Assembled;
-	tLast: Float64Array | null = null;
+	private readonly gf: Grid;
+	private readonly nb: number;
+	private readonly kind: Uint8Array;	// 0 산화막·CF, 1 전극, 2 계산에서 뺀 셀
+	tLast: Float64Array | null = null;	// 전체 격자 온도 (다음 풀이의 초기값)
 
-	constructor(private readonly g: Grid, private readonly p: Params, rb: ArrayLike<number>) {
+	constructor(private readonly g: Grid, private readonly p: Params, rb: ArrayLike<number>, gs: GridSpec = DEFAULT_GRID) {
 		this.fr = cfFraction(g, rb);
-		const kappa = new Float64Array(this.fr.length);
-		for (let m = 0; m < kappa.length; m++) kappa[m] = this.fr[m] * p.kappaCf + (1 - this.fr[m]) * p.kappaOx;
-		this.th = assemble(g, kappa);
+		const { gf, nb } = fullGrid(g, p, gs);
+		this.gf = gf;
+		this.nb = nb;
+		const n = gf.nr * gf.nz;
+		this.kind = new Uint8Array(n);
+		const kappa = new Float64Array(n);
+		for (let j = 0; j < gf.nz; j++) {
+			for (let i = 0; i < gf.nr; i++) {
+				const m = j * gf.nr + i;
+				const jo = j - nb;
+				if (jo < 0 || jo >= g.nz) {
+					this.kind[m] = 1;
+					kappa[m] = p.kappaEl;
+				} else if (i >= g.nr) {
+					// R_dom 밖 산화막: [R] 보정(A31)대로 R_dom에서 단열이 되도록 사실상 끊는다
+					this.kind[m] = 2;
+					kappa[m] = OFF * p.kappaOx;
+				} else {
+					const fv = this.fr[jo * g.nr + i];
+					kappa[m] = fv * p.kappaCf + (1 - fv) * p.kappaOx;
+				}
+			}
+		}
+		this.th = assemble(gf, kappa);
 		if (!this.th.A.factor()) throw new Error("열 행렬 분해 실패");
 	}
 
-	// 셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭
+	// 셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭.
+	// 돌려주는 V, T, tMax는 산화막 행만, P는 전극층 발열 포함
 	solve(v: number, tol = 0.05, maxIter = 80, relax = 0.7): Fields {
-		const { g, p, fr } = this;
-		const { nr, nz } = g;
+		const { gf, g, p, fr, kind, nb } = this;
+		const { nr, nz } = gf;
 		const n = nr * nz;
 		const s = v >= 0 ? 1 : -1;
 		const va = Math.abs(v);
@@ -189,12 +259,20 @@ export class FieldSolver {
 		let el: Assembled | null = null;
 		const q = new Float64Array(n);
 		const sigma = new Float64Array(n);
+		for (let m = 0; m < n; m++) {
+			if (kind[m] === 1) sigma[m] = 1 / p.rhoEl;
+			else if (kind[m] === 2) sigma[m] = OFF / p.rhoOx;
+		}
 		for (let it = 0; it < maxIter; it++) {
-			for (let m = 0; m < n; m++) {
-				const rho = p.rhoCf * (1 + p.alphaT * (T[m] - p.T0));
-				sigma[m] = fr[m] / rho + (1 - fr[m]) / p.rhoOx;
+			for (let jo = 0; jo < g.nz; jo++) {
+				for (let i = 0; i < g.nr; i++) {
+					const m = (jo + nb) * nr + i;
+					const fv = fr[jo * g.nr + i];
+					const rho = p.rhoCf * (1 + p.alphaT * (T[m] - p.T0));
+					sigma[m] = fv / rho + (1 - fv) / p.rhoOx;
+				}
 			}
-			el = assemble(g, sigma);
+			el = assemble(gf, sigma);
 			if (!el.A.factor()) throw new Error("전위 행렬 분해 실패");
 			V = new Float64Array(n);
 			for (let i = 0; i < nr; i++) V[(nz - 1) * nr + i] = el.gTop[i] * va;
@@ -240,14 +318,22 @@ export class FieldSolver {
 		this.tLast = T;
 		let I = 0;
 		let P = 0;
-		let tMax = -Infinity;
 		for (let i = 0; i < nr; i++) I += el!.gTop[i] * (va - V[(nz - 1) * nr + i]);
-		for (let m = 0; m < n; m++) {
-			P += q[m];
-			tMax = Math.max(tMax, T[m]);
+		for (let m = 0; m < n; m++) P += q[m];
+		// 산화막 부분만 잘라 돌려준다
+		const no = g.nz * g.nr;
+		const Vo = new Float64Array(no);
+		const To = new Float64Array(no);
+		let tMax = -Infinity;
+		for (let jo = 0; jo < g.nz; jo++) {
+			for (let i = 0; i < g.nr; i++) {
+				const m = (jo + nb) * nr + i;
+				Vo[jo * g.nr + i] = s * V[m];
+				To[jo * g.nr + i] = T[m];
+				tMax = Math.max(tMax, T[m]);
+			}
 		}
-		if (s < 0) for (let m = 0; m < n; m++) V[m] = -V[m];
-		return { V, T, I: s * I, P, tMax };
+		return { V: Vo, T: To, I: s * I, P, tMax };
 	}
 }
 
