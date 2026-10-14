@@ -58,10 +58,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
 	{
 		id: "geometry",
 		title: "소자 형상",
-		hint: "[R] Table I의 NiO 소자",
+		hint: "기본값은 [R] Table I의 NiO 소자. 위 소자 프리셋으로 TiN/HfO₂/TiN (A48)",
 		items: [
-			{ key: "L0", symbol: "t", label: "산화막 두께 = CF 길이", unit: "nm", scale: 1e-9, min: 40, max: 300, note: "범위 가정 (A37)" },
-			{ key: "phi0", symbol: "φ", label: "포밍된 CF 지름", unit: "nm", scale: 1e-9, min: 10, max: 100, note: "문헌 10–30 nm" },
+			{ key: "L0", symbol: "t", label: "산화막 두께 = CF 길이", unit: "nm", scale: 1e-9, min: 2, max: 300, log: true, note: "NiO 160 [6], HfO₂ 실험 6" },
+			{ key: "phi0", symbol: "φ", label: "포밍된 CF 지름", unit: "nm", scale: 1e-9, min: 1, max: 100, log: true, note: "역산 대상" },
 			{ key: "Rdom", symbol: "R<sub>dom</sub>", label: "계산 영역 반경", unit: "nm", scale: 1e-9, min: 30, max: 500, log: true, note: "보정값 (A31)" },
 		],
 	},
@@ -74,7 +74,7 @@ export const PARAM_GROUPS: ParamGroup[] = [
 			{ key: "alphaT", symbol: "α", label: "CF 비저항 온도 계수", unit: "1/K", scale: 1, min: 0, max: 3e-3 },
 			{ key: "rhoOx", symbol: "ρ<sub>ox</sub>", label: "산화막 비저항", unit: "Ω·m", scale: 1, min: 1, max: 1e5, log: true, note: "범위 가정 (A37)" },
 			{ key: "kappaCf", symbol: "κ<sub>CF</sub>", label: "CF 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 50 },
-			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 30, note: "문헌 1–10" },
+			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 0.1, max: 30, log: true, note: "HfO₂ 0.5–0.95 [11], [12]" },
 			{ key: "T0", symbol: "T<sub>0</sub>", label: "소자 온도", unit: "K", scale: 1, min: 150, max: 450 },
 		],
 	},

@@ -12,13 +12,14 @@ export interface Grid {
 	nz: number;
 }
 
-// 반경: CF 근처(0.75*phi0까지) 균일 drFine, 그 밖은 등비로 Rdom까지. 길이: 균일 nz칸.
+// 반경: CF 근처(0.75*phi0까지) 균일 min(drFine, phi0/8), 그 밖은 등비로 Rdom까지. 길이: 균일 nz칸.
 export function makeGrid(p: Params, gs: GridSpec): Grid {
 	const rFine = Math.min(0.75 * p.phi0, p.Rdom);
+	const dr = Math.min(gs.drFine, p.phi0 / 8);	// 가는 필라멘트도 반경을 4칸 이상으로 나눈다 (A48)
 	const faces: number[] = [];
-	for (let k = 0; k * gs.drFine <= rFine + 1e-15; k++) faces.push(k * gs.drFine);
+	for (let k = 0; k * dr <= rFine + 1e-15; k++) faces.push(k * dr);
 	if (faces[faces.length - 1] < rFine - 1e-15) faces.push(rFine);
-	let d = gs.drFine;
+	let d = dr;
 	while (faces[faces.length - 1] < p.Rdom - 1e-15) {
 		d *= gs.growth;
 		faces.push(Math.min(faces[faces.length - 1] + d, p.Rdom));

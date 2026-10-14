@@ -64,6 +64,22 @@ export function filamentCount(p: Params): number {
 	return Math.max(1, Math.round(p.nF * p.aCell));
 }
 
+// TiN/HfO2/TiN 소자 프리셋 (A48). 산화막 6 nm는 실험 소자 값 (사용자 제공).
+// HfO2·필라멘트(HfO2-x) 물성: Niraula & Karpov, IEEE TED 64(10) 4106 (2017)
+// (HfO2 kappa 0.5 W/(K m), sigma 1e-2 S/m; HfO2-x kappa 20 W/(K m), sigma 1e5 S/m).
+// phi0 5 nm는 가정 (측정에서 역산할 값). alphaT, Ed, vD0는 [R] 값 그대로 (역산 대상)
+export const HFO2_TIN: Readonly<Partial<Params>> = Object.freeze({
+	L0: 6e-9,	// [m]
+	phi0: 5e-9,	// [m], 가정
+	rhoCf: 1e-5,	// [ohm*m] (1000 uOhm*cm)
+	kappaCf: 20,	// [W/(K m)]
+	rhoOx: 100,	// [ohm*m]
+	kappaOx: 0.5,	// [W/(K m)]
+	tEl: 50e-9,	// [m], 가정 (A41)
+	kappaEl: 11.9,	// [W/(K m)]
+	rhoEl: 125e-8,	// [ohm*m]
+});
+
 // TiN 전극 프리셋 (A41). 두께 50 nm는 가정값: 실험 소자의 전극 두께로 바꿔 쓸 것
 export const TIN_ELECTRODE: Readonly<Pick<Params, "tEl" | "kappaEl" | "rhoEl">> = Object.freeze({ tEl: 50e-9, kappaEl: 11.9, rhoEl: 125e-8 });
 

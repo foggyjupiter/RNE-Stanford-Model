@@ -1,7 +1,7 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
+import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
 import { downloadPng, histogramChart, ivChart, stateProfileChart, stateTrendChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
@@ -323,6 +323,27 @@ function buildParams(): void {
 	});
 	head.append(resetAll);
 	box.replaceChildren(head);
+	// 소자 프리셋: 기본(NiO, [R]) / TiN/HfO2/TiN 6 nm (A48)
+	const presets = el("div", "preset device-preset");
+	const apply = (values: Partial<Params>): void => {
+		state.params = { ...state.params, ...values };
+		for (const f of paramFields) f.refresh();
+		updateCount();
+		buildWave();
+		schedule(0);
+	};
+	const nio = el("button", "btn", "NiO 160 nm (Russo)");
+	nio.type = "button";
+	nio.addEventListener("click", () => {
+		const back: Partial<Params> = {};
+		for (const k of Object.keys(HFO2_TIN) as (keyof Params)[]) (back as Record<string, number>)[k] = DEFAULT[k];
+		apply(back);
+	});
+	const hfo = el("button", "btn", "TiN/HfO₂/TiN 6 nm");
+	hfo.type = "button";
+	hfo.addEventListener("click", () => apply(HFO2_TIN));
+	presets.append(el("span", "preset-note", "소자 프리셋"), nio, hfo);
+	box.append(presets);
 	paramFields.length = 0;
 	PARAM_GROUPS.forEach((g, gi) => {
 		const d = el("details", "group");

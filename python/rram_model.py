@@ -79,6 +79,21 @@ class Params:
 
 DEFAULT = Params()
 
+# TiN/HfO2/TiN 소자 프리셋 (A48). 실험 소자: 산화막 6 nm (사용자 제공).
+# HfO2·필라멘트(HfO2-x) 물성: Niraula & Karpov, IEEE TED 64(10) 4106 (2017) Table
+#   (HfO2 kappa 0.5 W/(K m), sigma 1e-2 S/m; HfO2-x kappa 20 W/(K m), sigma 1e5 S/m).
+#   HfO2 박막 열전도도 0.49-0.95 W/(K m) (5.6-20 nm): Panzer et al., IEEE EDL 30(12) 1269 (2009).
+# phi0 5 nm는 가정 (측정에서 역산할 값). alpha_T, Ed, vD0는 [R] 값을 그대로 둠 (HfOx 값 미확인, 역산 대상)
+HFO2_TIN = {
+	"L0": 6e-9,	# [m]
+	"phi0": 5e-9,	# [m], 가정
+	"rho_cf": 1e-5,	# [ohm m] (1000 uOhm cm)
+	"kappa_cf": 20.0,	# [W/(K m)]
+	"rho_ox": 100.0,	# [ohm m]
+	"kappa_ox": 0.5,	# [W/(K m)]
+	"t_el": 50e-9, "kappa_el": 11.9, "rho_el": 125e-8,	# TiN 전극 (A41)
+}
+
 # TiN 전극 프리셋 (A41). 두께 50 nm는 가정값: 실험 소자의 전극 두께로 바꿔 쓸 것
 TIN_ELECTRODE = {"t_el": 50e-9, "kappa_el": 11.9, "rho_el": 125e-8}
 
@@ -107,12 +122,13 @@ class Grid:
 
 
 def make_grid(p, gs=DEFAULT_GRID):
-	"""반경: CF 근처(0.75*phi0까지) 균일 dr_fine, 그 밖은 등비로 R_dom까지. 길이: 균일 nz칸."""
+	"""반경: CF 근처(0.75*phi0까지) 균일 min(dr_fine, phi0/8), 그 밖은 등비로 R_dom까지. 길이: 균일 nz칸."""
 	r_fine = min(0.75 * p.phi0, p.R_dom)
-	faces = list(np.arange(0.0, r_fine + 1e-15, gs.dr_fine))
+	dr = min(gs.dr_fine, p.phi0 / 8)	# 가는 필라멘트도 반경을 4칸 이상으로 나눈다 (A48)
+	faces = list(np.arange(0.0, r_fine + 1e-15, dr))
 	if faces[-1] < r_fine - 1e-15:
 		faces.append(r_fine)
-	d = gs.dr_fine
+	d = dr
 	while faces[-1] < p.R_dom - 1e-15:
 		d *= gs.growth
 		faces.append(min(faces[-1] + d, p.R_dom))
