@@ -484,9 +484,11 @@ def invert(sweeps, p, alpha=None, gamma=2.0 / 3.0, gs=rm.DEFAULT_GRID, kinetics=
 				p = replace(p, Ed=ed, vD0=vD0)
 				pN = replace(pN, Ed=ed, vD0=vD0)
 		srates = [(s.rate, s.icc, f.v_set) for s, f in sets if np.isfinite(s.rate) and np.isfinite(s.icc) and np.isfinite(f.v_set)]
-		if srates and np.isfinite(gap.gap):
+		if srates and (np.isfinite(gap.gap) or np.isfinite(gap.r_neck)):
 			rate, icc, vs = (float(np.median([x[k] for x in srates])) for k in range(3))
-			Ea = fit_Ea(vs, gap_profile(lrs.phi, gap.gap, pN, gs), pN, rate, icc, gs)
+			# 시작 상태: 끊긴 갭으로 설명되면 갭, 아니면 잘록 구간 (A45)
+			rb_hrs = gap_profile(lrs.phi, gap.gap, pN, gs) if np.isfinite(gap.gap) else gap_profile(lrs.phi, gap.neck_len, pN, gs, gap.r_neck)
+			Ea = fit_Ea(vs, rb_hrs, pN, rate, icc, gs)
 			log(f"    I_CC {icc:.3g} A에서 V_set {vs:.3g} V → E_a {Ea / rm.EV:.3f} eV")
 			if np.isfinite(Ea):
 				p = replace(p, Ea=Ea)
