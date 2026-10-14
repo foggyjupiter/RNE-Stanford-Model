@@ -29,9 +29,13 @@ export function resultCsv(out: JobOutput): string {
 		for (let k = 0; k < out.v.length; k++) rows.push(`${out.v[k]},${out.i[k]}`);
 		return rows.join("\n");
 	}
-	const rows = ["cycle,t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"];
+	// op: 이어 붙인 결과(스윕·시퀀스)에서 RESET / SET 구간 구분. 펄스 하나면 빈칸
+	const rows = ["cycle,op,t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"];
 	out.cycles.forEach((r, c) => {
-		for (let k = 0; k < r.t.length; k++) rows.push(`${c + 1},${r.t[k]},${r.vApp[k]},${r.vCell[k]},${r.i[k]},${r.rMin[k]},${r.T[k]}`);
+		for (let k = 0; k < r.t.length; k++) {
+			const op = r.split === undefined ? "" : k < r.split ? "reset" : "set";
+			rows.push(`${c + 1},${op},${r.t[k]},${r.vApp[k]},${r.vCell[k]},${r.i[k]},${r.rMin[k]},${r.T[k]}`);
+		}
 	});
 	return rows.join("\n");
 }

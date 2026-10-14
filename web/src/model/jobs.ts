@@ -14,6 +14,7 @@ export interface SweepJob {
 	vSet: number;	// SET 구간 최대 전압 [V]
 	tRamp: number;	// 구간당 램프 시간 [s]
 	rs: number;	// SET compliance 저항 [ohm]
+	iCc?: number;	// SET 전류 제한 [A]. 있으면 rs 대신 쓴다 (A40)
 	params: Params;
 	cycles: number;	// 각 사이클은 직전 사이클의 끝 상태에서 시작
 	variability?: Variability;	// [D] 식 (10),(11)
@@ -28,6 +29,7 @@ export interface PulseJob {
 	width: number;	// 평탄부 [s]
 	tEdge: number;	// 상승/하강 [s]
 	rs: number;	// SET compliance 저항 [ohm]
+	iCc?: number;	// SET 전류 제한 [A]. 있으면 rs 대신 쓴다 (A40)
 	params: Params;
 	grid?: GridSpec;
 }
@@ -46,6 +48,7 @@ export interface SequenceJob {
 	vRead: number;	// [V]
 	tEdge: number;	// [s]
 	rs: number;	// SET compliance 저항 [ohm]
+	iCc?: number;	// SET 전류 제한 [A]. 있으면 rs 대신 쓴다 (A40)
 	params: Params;
 	cycles: number;
 	variability?: Variability;
@@ -133,6 +136,7 @@ export function concatResults(parts: SimResult[]): SimResult {
 			hotT = tm;
 			out.hot = { ...r.hot, t: r.hot.t + offset };
 		}
+		if (idx === 1) out.split = k - (r.t.length - 1);
 		offset += r.t[r.t.length - 1];
 		out.steps += r.steps;
 	}
@@ -191,7 +195,7 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 			base = 0.5;
 		}
 		const r = simulate(pulseWaveform(job.op, job.v, job.tEdge, job.width), rb0, p, {
-			rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => onProgress?.(base + (1 - base) * f, 1),
+			rs: job.rs, iCc: job.iCc, includeCp: true, grid: gs, onProgress: (f) => onProgress?.(base + (1 - base) * f, 1),
 		});
 		const r0 = rb0 ? readResistance(rb0, p, V_READ, gs) : rStart;
 		const r1 = readResistance(r.rbEnd, p, V_READ, gs);
@@ -218,11 +222,11 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 		if (job.kind === "sweep") {
 			// RESET 반쪽과 SET 반쪽을 따로 돌려 이어 붙인다 (가운데 HRS 상태를 읽기 위해)
 			r1 = simulate(resetRampWaveform(job.vReset, job.tRamp), rb, pc, { grid: gs, onProgress: (f) => prog(0.5 * f) });
-			r2 = simulate(setRampWaveform(job.vSet, job.tRamp), r1.rbEnd, pc, { rs: job.rs, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
+			r2 = simulate(setRampWaveform(job.vSet, job.tRamp), r1.rbEnd, pc, { rs: job.rs, iCc: job.iCc, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
 		} else {
 			vRead = job.vRead;
 			r1 = simulate(pulseWaveform("reset", job.reset.v, job.tEdge, job.reset.width), rb, pc, { rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 * f) });
-			r2 = simulate(pulseWaveform("set", job.set.v, job.tEdge, job.set.width), r1.rbEnd, pc, { rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
+			r2 = simulate(pulseWaveform("set", job.set.v, job.tEdge, job.set.width), r1.rbEnd, pc, { rs: job.rs, iCc: job.iCc, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
 		}
 		const rp = resetPoint(r1, false);
 		const rHrs = readResistance(r1.rbEnd, pc, vRead, gs);

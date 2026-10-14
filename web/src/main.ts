@@ -3,12 +3,12 @@
 import "./styles.css";
 import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, filamentCount, type Job, type JobOutput, type FixedOutput, type Params, type SimResult, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
-import { downloadPng, histogramChart, ivChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
+import { downloadPng, histogramChart, ivChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
 import { downloadCsv, resultCsv, summaryCsv } from "./ui/export";
 import { meanStd, median, siFormat, timeUnit } from "./ui/format";
 import { PARAM_GROUPS, VAR_FIELDS, type ParamMeta } from "./ui/meta";
-import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Mode } from "./ui/state";
+import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Limit, type Mode } from "./ui/state";
 
 const state = initialState();
 const client = new ModelClient();
@@ -150,6 +150,19 @@ function waveHint(): string {
 	return "가운데 잘록 구간의 반경과 길이를 정하고 스위칭 없이 읽기 I-V를 본다";
 }
 
+// SET 전류 제한: 직렬 저항 R_s 또는 측정기 전류 제한 CC (A40)
+function limitFields(w: { rs: number; limit: Limit; icc: number }, hint: string): Field[] {
+	const seg = makeSegmented<Limit>("SET 전류 제한 방식", [["rs", "직렬 저항 R_s"], ["cc", "전류 제한 CC"]], () => w.limit, (v) => {
+		w.limit = v;
+		buildWave();
+		schedule(0);
+	});
+	seg.el.classList.add("seg-block");
+	const suffix = hint ? ` (${hint})` : "";
+	if (w.limit === "cc") return [seg, numField("icc", "I<sub>CC</sub>", `SET 전류 제한${suffix}`, "µA", 1, 1e4, 1e-6, () => w.icc, (v) => (w.icc = v), { log: true, note: "A40" })];
+	return [seg, numField("rs", "R<sub>s</sub>", `SET 직렬 저항${suffix}`, "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" })];
+}
+
 function buildWave(): void {
 	const s = section("파형", waveHint());
 	const add = (f: Field): void => {
@@ -162,7 +175,7 @@ function buildWave(): void {
 		add(numField("vReset", "V<sub>RESET,max</sub>", "RESET 구간 최대 전압", "V", 0.5, 3, 1, () => w.vReset, (v) => (w.vReset = v)));
 		add(numField("vSet", "V<sub>SET,max</sub>", "SET 구간 최대 전압", "V", 0.5, 6, 1, () => w.vSet, (v) => (w.vSet = v)));
 		add(numField("tRamp", "t<sub>ramp</sub>", "구간당 램프 시간", "ms", 1, 10000, 1e-3, () => w.tRamp, (v) => (w.tRamp = v), { log: true, note: "[R]: 4 V/s" }));
-		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET 구간은 0 Ω)", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		limitFields(w, "RESET 구간은 제한 없음").forEach(add);
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
 	} else if (state.mode === "pulse") {
 		const w = state.pulse;
@@ -183,7 +196,7 @@ function buildWave(): void {
 		add(numField("amp", "V<sub>p</sub>", "펄스 진폭 (양의 극성)", "V", 0.5, 5, 1, () => w.amplitude, (v) => (w.amplitude = v)));
 		add(numField("width", "t<sub>w</sub>", "펄스 폭 (평탄부)", "µs", 0.01, 100, 1e-6, () => w.width, (v) => (w.width = v), { log: true }));
 		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 100, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
-		if (w.op === "set") add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		if (w.op === "set") limitFields(w, "").forEach(add);
 	} else if (state.mode === "sequence") {
 		const w = state.sequence;
 		add(numField("resetV", "V<sub>RESET</sub>", "RESET 펄스 진폭", "V", 0.5, 5, 1, () => w.resetV, (v) => (w.resetV = v)));
@@ -192,7 +205,7 @@ function buildWave(): void {
 		add(numField("setW", "t<sub>SET</sub>", "SET 펄스 폭", "µs", 0.01, 100, 1e-6, () => w.setWidth, (v) => (w.setWidth = v), { log: true }));
 		add(numField("readV", "V<sub>read</sub>", "읽기 전압", "V", 0.02, 0.3, 1, () => w.vRead, (v) => (w.vRead = v)));
 		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 100, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
-		add(numField("rs", "R<sub>s</sub>", "SET 직렬 저항 (RESET은 0 Ω)", "kΩ", 0.1, 30, 1e3, () => w.rs, (v) => (w.rs = v), { log: true, note: "A14" }));
+		limitFields(w, "RESET은 제한 없음").forEach(add);
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
 	} else {
 		const w = state.fixed;
@@ -344,16 +357,20 @@ function buildParams(): void {
 }
 
 // ---------------------------------------------------------------- 작업 만들기
+function iccOf(w: { limit: Limit; icc: number }): number | undefined {
+	return w.limit === "cc" ? w.icc : undefined;
+}
+
 function currentJob(): Job {
 	const p: Params = { ...state.params };
 	const variability = state.variabilityOn ? { ...state.variability } : undefined;
 	if (state.mode === "sweep") {
 		const w = state.sweep;
-		return { kind: "sweep", vReset: w.vReset, vSet: w.vSet, tRamp: w.tRamp, rs: w.rs, params: p, cycles: w.cycles, variability, seed: state.seed };
+		return { kind: "sweep", vReset: w.vReset, vSet: w.vSet, tRamp: w.tRamp, rs: w.rs, iCc: iccOf(w), params: p, cycles: w.cycles, variability, seed: state.seed };
 	}
 	if (state.mode === "pulse") {
 		const w = state.pulse;
-		return { kind: "pulse", op: w.op, v: w.amplitude, width: w.width, tEdge: w.tEdge, rs: w.rs, params: p };
+		return { kind: "pulse", op: w.op, v: w.amplitude, width: w.width, tEdge: w.tEdge, rs: w.rs, iCc: iccOf(w), params: p };
 	}
 	if (state.mode === "sequence") {
 		const w = state.sequence;
@@ -364,6 +381,7 @@ function currentJob(): Job {
 			vRead: w.vRead,
 			tEdge: w.tEdge,
 			rs: w.rs,
+			iCc: iccOf(w),
 			params: p,
 			cycles: w.cycles,
 			variability,
@@ -535,7 +553,7 @@ function renderSweep(out: TransientOutput, stats: HTMLElement): void {
 	if (multi) specs.push({ id: "hist", title: "LRS / HRS 분포", sub: "0.1 V 읽기", wide: true });
 	specs.push(...timeCards(multi ? "마지막 사이클" : undefined));
 	ensureCards(specs);
-	ivChart(cards.get("iv")!, out.cycles.map((r) => ({ v: r.vApp, i: r.i })));
+	sweepIvChart(cards.get("iv")!, out.cycles.map((r) => ({ v: r.vApp, i: r.i, split: r.split ?? r.t.length - 1 })));
 	const last = out.cycles[n - 1];
 	drawTime(Array.from(last.t), Array.from(last.vApp), Array.from(last.i), Array.from(last.rMin), Array.from(last.T), last.hot, last.grid, true);
 	const s = out.summary;

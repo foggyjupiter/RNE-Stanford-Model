@@ -97,6 +97,7 @@ describe("golden: 과도 응답", () => {
 	const cases: [string, Waveform, ArrayLike<number> | null, SimOptions][] = [
 		["reset_sweep_4Vps.csv", resetRampWaveform(1.6, 0.4), null, {}],
 		["cycle_sweep.csv", sweepWaveform(1.6, 4.0, 0.25), null, { rs: 3e3 }],
+		["cycle_sweep_cc.csv", sweepWaveform(1.6, 4.0, 0.25), null, { iCc: 1e-3 }],
 		["pulse_reset.csv", pulseWaveform("reset", 3.0, 10e-9, 10e-6), null, { includeCp: true }],
 		["pulse_set.csv", pulseWaveform("set", 2.5, 10e-9, 1e-6), Float64Array.from(hp.rb_m), { includeCp: true, rs: 3e3 }],
 	];

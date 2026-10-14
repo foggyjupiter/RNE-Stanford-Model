@@ -128,8 +128,20 @@ export function solveCell(fs: FieldSolver, p: Params, vApp: number, rSer: number
 	return { vc, fld: fs.solve(vc) };
 }
 
+// 전류 제한(CC) 상태의 셀 전압: N·I(V_c) + CP·(V_c − vPrev)/dt = iCc 를 V_c에 대해 푼다 (A40).
+// vHi는 제한 없이 푼 셀 전압 (그때 전류가 iCc보다 크므로 해는 [lo, vHi] 안에 있다)
+export function solveCellCc(fs: FieldSolver, p: Params, iCc: number, vHi: number, cp = 0, dt = 0, vPrev = 0): { vc: number; fld: Fields } {
+	const c = cp > 0 && dt > 0 ? cp / dt : 0;
+	const n = filamentCount(p);
+	const lo = c > 0 ? Math.min(0, vPrev) : 0;
+	const g = (vc: number): number => n * fs.solve(vc).I + c * (vc - vPrev) - iCc;
+	const vc = brent(g, lo, vHi);
+	return { vc, fld: fs.solve(vc) };
+}
+
 export interface SimOptions {
 	rs?: number;	// SET compliance 저항 [ohm]
+	iCc?: number;	// SET 동작 전류 제한 [A] (A40). 주면 SET에서 rs 대신 단자 전류를 iCc로 자른다
 	rsReset?: number;	// RESET 직렬 저항 [ohm]
 	includeCp?: boolean;	// CP 포함 (펄스)
 	dvMax?: number;	// 한 스텝 전압 변화 상한 [V]
@@ -149,6 +161,7 @@ export interface SimResult {
 	hot: { t: number; v: number; rb: Float64Array; T: Float64Array };	// 최고 온도 시점의 형상과 온도 분포
 	grid: Grid;
 	steps: number;
+	split?: number;	// 이어 붙인 결과에서 두 번째 부분(SET)이 시작하는 인덱스 (concatResults)
 }
 
 // CF 경계를 시간에 따라 움직이며 응답을 계산한다. 경계 이동은 명시적 Euler + 적응 스텝 (A34)
@@ -181,16 +194,24 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 	for (;;) {
 		const va = wf.v(t);
 		const op = wf.op(Math.min(t, wf.tEnd * (1 - 1e-12)));
-		const rSer = p.RL + seriesR(op, rs, rsReset);
+		const cc = o.iCc !== undefined && op === "set";
+		const rSer = p.RL + (cc ? 0 : seriesR(op, rs, rsReset));
+		const cp = o.includeCp ? p.CP : 0;
 		const fs = new FieldSolver(g, p, rb);
 		fs.tLast = tPrev;
-		const sol = solveCell(fs, p, va, rSer, o.includeCp ? p.CP : 0, dt, vc);
+		let sol = solveCell(fs, p, va, rSer, cp, dt, vc);
+		let iTerm = (va - sol.vc) / rSer;
+		if (cc && iTerm > o.iCc!) {
+			// 측정기가 출력 전압을 낮춰 전류를 iCc에 고정. vApp에는 설정 전압을 그대로 기록한다
+			sol = solveCellCc(fs, p, o.iCc!, sol.vc, cp, dt, vc);
+			iTerm = o.iCc!;
+		}
 		vc = sol.vc;
 		tPrev = sol.fld.T;
 		ts.push(t);
 		vas.push(va);
 		vcs.push(vc);
-		is.push((va - vc) / rSer);
+		is.push(iTerm);
 		let rmin = Infinity;
 		for (let j = 0; j < nz; j++) rmin = Math.min(rmin, rb[j]);
 		rmins.push(rmin);

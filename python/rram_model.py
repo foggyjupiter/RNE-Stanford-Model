@@ -309,6 +309,22 @@ def solve_cell(fs, p, v_app, r_ser, cp=0.0, dt=0.0, v_prev=0.0):
 	return vc, fs.solve(vc)
 
 
+def solve_cell_cc(fs, p, i_cc, v_hi, cp=0.0, dt=0.0, v_prev=0.0):
+	"""전류 제한(CC) 상태의 셀 전압: N*I(V_c) + CP*(V_c - v_prev)/dt = i_cc 를 V_c에 대해 푼다 (A40).
+
+	측정기가 단자 전류를 i_cc에 고정하도록 출력 전압을 낮춘 상태. v_hi는 제한 없이 푼 셀 전압
+	(이때 전류가 i_cc보다 크므로 해는 [lo, v_hi] 안에 있다). 반환: (V_c, Fields).
+	"""
+	c = cp / dt if (cp > 0 and dt > 0) else 0.0
+
+	def g(vc):
+		return p.N * fs.solve(vc).I + c * (vc - v_prev) - i_cc
+
+	lo = min(0.0, v_prev) if c > 0 else 0.0
+	vc = brentq(g, lo, v_hi, xtol=1e-7, rtol=1e-9)
+	return vc, fs.solve(vc)
+
+
 # ---------------------------------------------------------------- 시뮬레이터
 @dataclass
 class Result:
@@ -330,7 +346,7 @@ CSV_HEADER = "t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"
 
 
 def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, include_cp=False,
-		dv_max=1e-2, drb_max=None, n_snap=0):
+		dv_max=1e-2, drb_max=None, n_snap=0, i_cc=None):
 	"""CF 경계를 시간에 따라 움직이며 응답을 계산한다.
 
 	rb0: 초기 경계 반경 (스칼라 또는 높이별 배열). None이면 포밍된 CF (phi0/2).
@@ -338,6 +354,8 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		한 스텝에서 전압 변화 <= dv_max, 경계 이동 <= drb_max (기본: 반경 격자의 1/4).
 	include_cp: CP를 후진 Euler로 포함 (펄스용).
 	n_snap: 등간격 시각에 (rb, T) 스냅숏 저장 개수.
+	i_cc: SET 동작의 전류 제한 [A] (A40). 주면 SET 동작에서 Rs 대신 단자 전류를 i_cc로 자른다.
+		v_app에는 설정 전압을 그대로 기록한다 (측정 I-V처럼 CC 구간이 수평선으로 보인다).
 	"""
 	g = make_grid(p, gs)
 	nz = len(g.zc)
@@ -359,13 +377,18 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 	while True:
 		va = wf.v(t)
 		op = wf.op(min(t, wf.t_end * (1 - 1e-12)))
-		r_ser = p.RL + series_r(op, Rs, Rs_reset)
+		cc = i_cc is not None and op == "set"
+		r_ser = p.RL + (0.0 if cc else series_r(op, Rs, Rs_reset))
+		cp = p.CP if include_cp else 0.0
 		fs = FieldSolver(g, p, rb)
 		fs.T_last = T_prev
-		vc_new, fld = solve_cell(fs, p, va, r_ser, p.CP if include_cp else 0.0, dt, vc)
+		vc_new, fld = solve_cell(fs, p, va, r_ser, cp, dt, vc)
+		i_term = (va - vc_new) / r_ser
+		if cc and i_term > i_cc:
+			vc_new, fld = solve_cell_cc(fs, p, i_cc, vc_new, cp, dt, vc)
+			i_term = i_cc
 		vc = vc_new
 		T_prev = fld.T
-		i_term = (va - vc) / r_ser
 		out["t"].append(t)
 		out["v_app"].append(va)
 		out["v_cell"].append(vc)

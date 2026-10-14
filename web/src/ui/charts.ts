@@ -135,6 +135,37 @@ export function ivChart(div: HTMLElement, series: IvSeries[], yFloor = 1e-12): v
 	draw(div, data, layout(t, { title: "전압 (V)" }, { title: "|전류| (A)", log: true, range: logRange(all) }, { hovermode: "closest" }));
 }
 
+// unipolar 스윕 I-V: RESET 구간과 SET 구간을 색으로 나눠 겹쳐 그린다 (측정 I-V 그림 형식)
+export interface SweepIvSeries extends IvSeries {
+	split: number;	// SET 구간이 시작하는 인덱스
+}
+
+export function sweepIvChart(div: HTMLElement, series: SweepIvSeries[], yFloor = 1e-12): void {
+	const t = theme();
+	const op = overlayOpacity(series.length);
+	const data: Plotly.Data[] = [];
+	const part = (s: SweepIvSeries, k: number, a: number, b: number, name: string, color: string): Plotly.Data => ({
+		type: "scattergl",
+		mode: "lines",
+		x: Array.from(s.v).slice(a, b),
+		y: Array.from(s.i, (z) => Math.max(Math.abs(z), yFloor)).slice(a, b),
+		line: { color, width: series.length > 1 ? 1.25 : 2 },
+		opacity: op,
+		name,
+		legendgroup: name,
+		showlegend: k === 0,
+		hovertemplate: `V = %{x:.3f} V<br>|I| = %{customdata}<extra>${name}${series.length > 1 ? ` · 사이클 ${k + 1}` : ""}</extra>`,
+		customdata: Array.from(s.i, (z) => siFormat(Math.abs(z), "A")).slice(a, b),
+	});
+	series.forEach((s, k) => {
+		data.push(part(s, k, 0, s.split + 1, "RESET", t.s2));
+		data.push(part(s, k, s.split, s.v.length, "SET", t.s1));
+	});
+	const all: number[] = [];
+	for (const s of series) for (let k = 0; k < s.i.length; k++) all.push(Math.abs(s.i[k]));
+	draw(div, data, layout(t, { title: "전압 (V)" }, { title: "|전류| (A)", log: true, range: logRange(all) }, { hovermode: "closest", showlegend: true, margin: { l: 56, r: 16, t: 28, b: 44 } }));
+}
+
 // ---------------------------------------------------------------- 시간축, 단일 계열
 export interface TimeOpt {
 	tScale: number;

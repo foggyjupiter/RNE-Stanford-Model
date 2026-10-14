@@ -10,6 +10,7 @@
 |---|---|---|---|---|
 | `reset_sweep_4Vps.csv` | RESET만: 0 → 1.6 → 0 V, 4 V/s ([R] Fig. 3 조건) | 포밍된 LRS (반경 40 nm) | 0 | 무시 |
 | `cycle_sweep.csv` | 0 → 1.6 V (RESET) → 0 → 4.0 V (SET) → 0, 구간당 0.25 s | 포밍된 LRS | SET 3 kΩ / RESET 0 | 무시 |
+| `cycle_sweep_cc.csv` | `cycle_sweep.csv`와 같은 파형 | 포밍된 LRS | SET 전류 제한 1 mA (A40) / RESET 0 | 무시 |
 | `pulse_reset.csv` | RESET 3 V, 평탄부 10 µs, 상승·하강 10 ns | 포밍된 LRS | 0 | 포함 (20 fF) |
 | `pulse_set.csv` | SET 2.5 V, 평탄부 1 µs, 상승·하강 10 ns | `hrs_profile.csv` | 3 kΩ | 포함 |
 
