@@ -2,6 +2,7 @@
 
 import { DEFAULT_GRID, type GridSpec, type Params } from "./params";
 import { makeGrid } from "./fields";
+import { runMeasure, runMeasureSim, type MeasureJob, type MeasureOutput, type MeasureSimJob, type MeasureSimOutput } from "./measureJob";
 import {
 	deviceIv, deviceRead, ivFixedState, neckProfile, normalRng, pulseWaveform, readResistance, resetPoint, resetRampWaveform,
 	sampleCycleParams, sampleDevice, simulate, uniformRng, type FilamentGeom, type MonteCarloSpec, type Op, type SimResult,
@@ -69,7 +70,7 @@ export interface FixedJob {
 	seed?: number;
 }
 
-export type Job = SweepJob | PulseJob | SequenceJob | FixedJob;
+export type Job = SweepJob | PulseJob | SequenceJob | FixedJob | MeasureJob | MeasureSimJob;
 
 export interface CycleSummary {
 	rLrs: number;	// LRS 읽기 저항 [ohm]
@@ -109,7 +110,7 @@ export interface FixedOutput {
 const MC_IV_SAMPLES = 8;	// I-V를 겹쳐 그릴 소자 수
 const MC_IV_POINTS = 21;	// 그 I-V의 점 수
 
-export type JobOutput = TransientOutput | FixedOutput;
+export type JobOutput = TransientOutput | FixedOutput | MeasureOutput | MeasureSimOutput;
 
 export type ProgressFn = (done: number, total: number) => void;
 
@@ -156,6 +157,8 @@ function setRampWaveform(vSet: number, tRamp: number): Waveform {
 }
 
 export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
+	if (job.kind === "measure") return runMeasure(job, onProgress);
+	if (job.kind === "measureSim") return runMeasureSim(job, onProgress);
 	const p = job.params;
 	const gs = job.grid ?? DEFAULT_GRID;
 	if (job.kind === "fixed") {

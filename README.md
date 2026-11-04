@@ -32,6 +32,7 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # 약 10�
 - `python/inverse.py`: 측정 I-V에서 파라미터 역산 (Russo [7]의 추출법 + 2차원 모델). `python/inverse.ipynb`에 가상 측정으로 한 검증과 사용법
 - `docs/실험정보_요청.md`: 역산에 필요한 실험 정보·데이터 목록
 - `python/measurement.py`: 측정 프로그램 엑셀(.xlsx)을 읽어 스윕을 forming / SET / RESET / 읽기로 분류하고 역산 입력으로 바꿈 (A50)
+- `python/golden_measure.py`: 측정 데이터 모드 정답지(`golden/measure_6nm_fixture.xlsx`, `golden/measure.json`)
 
 ## 2단계 — TypeScript 코어
 
@@ -60,6 +61,7 @@ npm run build     # dist/ 에 정적 파일 생성
 - 결과: I-V, 인가 전압·전류·가장 가는 곳 반경·최고 온도 대 시간, **필라멘트 형상과 온도 분포 지도**([6] Fig. 2와 같은 그림)
 - 파라미터 패널: RESET(열 용해) / SET(측면 성장) / 소자 형상 / 물성 / **전극(TiN 프리셋)** / 기생 성분 / 필라멘트 밀도
 - SET 전류 제한: 직렬 저항 R_s 또는 측정기처럼 전류를 자르는 **CC** (A40). I-V 스윕은 RESET·SET 구간을 색으로 나눠 그립니다
+- **측정 데이터 모드**: 측정 프로그램 엑셀(.xlsx)을 여러 개 끌어다 놓으면 브라우저 안에서 읽어(밖으로 보내지 않음) 스윕을 forming / SET / RESET / 읽기로 자동 분류합니다(손으로 바꿀 수 있음). 결과: 색 구분 I-V, 사이클별 저항·전압, RESET 직전 필라멘트 온도([7] 식 (5)), 열저항/저항 측정 대 모델, 두께별 forming 전압, 직렬 저항 민감도 표, 산화막 비저항·필라멘트 지름. "시뮬레이션 실행"을 누르면 역산값으로 RESET → SET을 같은 램프·CC·패드 정전용량으로 계산해 겹쳐 그리고 내부 상태(형상, 온도, 필라멘트 전류)를 보여 줍니다 (A50–A54)
 - 변동성: 켜면 사이클을 겹쳐 그리고 LRS/HRS 분포 히스토그램. 2차원 계산이라 **스윕 한 사이클에 약 15초** 걸려서, 켤 때 사이클 수가 1이면 3으로 올립니다. 진행 막대와 취소 버튼이 있습니다.
 - 내보내기: 결과 CSV, 사이클 요약 CSV, 차트별 PNG. 라이트/다크 모드
 

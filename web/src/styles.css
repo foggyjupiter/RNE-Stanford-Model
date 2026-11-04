@@ -735,3 +735,103 @@ summary:focus-visible {
 .device-preset {
 	margin: 4px 0 20px;
 }
+
+/* ---------------------------------------------------------------- 측정 데이터 모드 */
+.dropzone {
+	display: block;
+	margin: 4px 0 14px;
+	padding: 18px 14px;
+	border: 1.5px dashed var(--line);
+	border-radius: var(--radius);
+	background: var(--surface-2);
+	text-align: center;
+	cursor: pointer;
+}
+
+.dropzone.over {
+	border-color: var(--series-1);
+}
+
+.dropzone input {
+	display: none;
+}
+
+.dropzone-text {
+	font-size: 13px;
+	color: var(--text-2);
+}
+
+.subpanel .btn {
+	margin-top: 10px;
+}
+
+.card.empty {
+	padding: 40px 24px;
+	text-align: center;
+}
+
+.empty-title {
+	margin: 0 0 8px;
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.table-host,
+.table-scroll {
+	overflow: auto;
+}
+
+.table-scroll {
+	max-height: 420px;
+}
+
+.data-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12.5px;
+	font-variant-numeric: tabular-nums;
+}
+
+.data-table th,
+.data-table td {
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--line);
+	text-align: left;
+	white-space: nowrap;
+}
+
+.data-table th {
+	position: sticky;
+	top: 0;
+	background: var(--surface);
+	color: var(--text-2);
+	font-weight: 600;
+}
+
+.data-table .main-row td {
+	font-weight: 600;
+}
+
+.data-table select {
+	font: inherit;
+	color: inherit;
+	background: var(--surface-2);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 2px 4px;
+}
+
+.plot.table-host,
+.plot.table-scroll {
+	height: auto;
+}
+
+.file-row {
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 10px;
+}
+
+.file-row .link-btn {
+	white-space: nowrap;
+}

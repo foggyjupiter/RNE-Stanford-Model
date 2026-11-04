@@ -4,3 +4,7 @@ export * from "./fields";
 export * from "./simulate";
 export * from "./jobs";
 // ModelClient(Web Worker 래퍼)는 UI에서만 "./client"로 직접 가져온다.
+export * from "./inverse";
+export * from "./measurement";
+export * from "./measureJob";
+export * from "./xlsx";

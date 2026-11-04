@@ -2,7 +2,7 @@
 
 import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, RS_SET, type MonteCarloSpec, type Params, type Variability } from "../model";
 
-export type Mode = "sweep" | "pulse" | "sequence" | "fixed";
+export type Mode = "sweep" | "pulse" | "sequence" | "fixed" | "measure";
 
 // SET 동작의 전류 제한 방식: 직렬 저항 R_s 또는 측정기 전류 제한 CC (A40)
 export type Limit = "rs" | "cc";
@@ -12,6 +12,7 @@ export const MODE_LABELS: Record<Mode, string> = {
 	pulse: "펄스",
 	sequence: "쓰기-읽기 시퀀스",
 	fixed: "고정 상태",
+	measure: "측정 데이터",
 };
 
 // unipolar 스윕: 0 → +V_RESET → 0 (compliance 없음) → +V_SET → 0 (R_s 직렬). 포밍된 LRS에서 시작
@@ -60,6 +61,18 @@ export interface FixedSettings {
 	mc: MonteCarloSpec;
 }
 
+// 측정 데이터 모드 (A50): 엑셀을 올려 분류·역산하고, 역산값으로 시뮬레이션을 겹쳐 본다
+export interface MeasureSettings {
+	thickness: number;	// 분석할 두께 [m] (파일 이름에서)
+	rate: number;	// 평균 램프 속도 [V/s] (계단 / 머무는 시간, 가정)
+	alpha: number;	// 필라멘트 저항 온도 계수 [1/K] ([C] 식 (1), 가정)
+	icc: number;	// 시뮬레이션 SET 전류 제한 [A] (NaN이면 측정 SET의 중앙값)
+	includeCp: boolean;	// 시뮬레이션에 패드 정전용량 (A51)
+	fitEa: boolean;	// 시뮬레이션 전에 E_a를 측정 V_set에 맞춤 (A54)
+}
+
+export const DEFAULT_MEASURE: MeasureSettings = { thickness: NaN, rate: 1.0, alpha: 1.7e-3, icc: NaN, includeCp: true, fitEa: true };
+
 export interface AppState {
 	mode: Mode;
 	params: Params;
@@ -70,6 +83,7 @@ export interface AppState {
 	pulse: PulseSettings;
 	sequence: SequenceSettings;
 	fixed: FixedSettings;
+	measure: MeasureSettings;
 }
 
 // CC 기본값 [A]: 기본 소자(φ 80 nm, [R] Table I)의 R_s 3 kΩ 스윕에서 SET 최대 전류(약 1.2 mA)와 같은 자릿수 (A40)
@@ -106,5 +120,6 @@ export function initialState(): AppState {
 		pulse: { ...DEFAULT_PULSE },
 		sequence: { ...DEFAULT_SEQUENCE },
 		fixed: { ...DEFAULT_FIXED, mc: { ...DEFAULT_MC } },
+		measure: { ...DEFAULT_MEASURE },
 	};
 }

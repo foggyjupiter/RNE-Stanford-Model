@@ -16,3 +16,7 @@ export function loadCsv(name: string): Record<string, number[]> {
 	}
 	return data;
 }
+
+export function goldenPath(name: string): string {
+	return join(GOLDEN_DIR, name);
+}

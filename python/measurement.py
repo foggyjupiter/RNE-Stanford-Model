@@ -65,6 +65,7 @@ def load_xlsx(path):
 	import openpyxl
 	wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
 	label = os.path.splitext(os.path.basename(path))[0]
+	label = re.sub(r"#U([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), label)	# 압축 도구가 바꾼 한글 이름
 	m = re.search(r"(\d+(?:\.\d+)?)\s*nm", label)
 	ses = Session(path, label, float(m.group(1)) * 1e-9 if m else float("nan"), float("nan"))
 	reset_seen = False

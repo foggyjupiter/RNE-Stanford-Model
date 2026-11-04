@@ -1,6 +1,6 @@
 // CSV 내보내기. PNG는 charts.ts의 downloadPng.
 
-import { stateMetrics, type CycleSummary, type Grid, type JobOutput } from "../model";
+import { stateMetrics, type CycleSummary, type Grid, type JobOutput, type MeasureOutput } from "../model";
 
 function download(name: string, text: string): void {
 	const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
@@ -30,6 +30,8 @@ export function resultCsv(out: JobOutput): string {
 		return rows.join("\n");
 	}
 	// op: 이어 붙인 결과(스윕·시퀀스)에서 RESET / SET 구간 구분. 펄스 하나면 빈칸
+	if (out.kind === "measure") return measureCsv(out);
+	if (out.kind === "measureSim") return "";
 	const rows = ["cycle,op,t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"];
 	out.cycles.forEach((r, c) => {
 		for (let k = 0; k < r.t.length; k++) {
@@ -64,4 +66,12 @@ export function stateCsv(summary: CycleSummary[], g: Grid): string {
 
 export function downloadCsv(name: string, text: string): void {
 	download(name, text);
+}
+
+// 측정 데이터 특징값: RESET과 SET 한 줄씩 (R은 R_L 뺀 값)
+export function measureCsv(out: MeasureOutput): string {
+	const rows = ["file,sweep,kind,v_reset_V,i_reset_A,R0_ohm,T_crit_K,Rth_KperW,v_set_V,R_hrs_ohm,cc_A"];
+	for (const r of out.resets) rows.push(`${r.file},${r.index},reset,${r.vReset},${r.iReset},${r.R0},${r.tCrit},${r.rth},,,`);
+	for (const s of out.sets) rows.push(`${s.file},${s.index},set,,,,,,${s.vSet},${s.rHrs},${s.cc}`);
+	return rows.join("\n");
 }

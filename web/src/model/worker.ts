@@ -15,8 +15,10 @@ export type WorkerResponse =
 
 function transferables(out: JobOutput): ArrayBuffer[] {
 	if (out.kind === "fixed") return [out.v.buffer as ArrayBuffer, out.i.buffer as ArrayBuffer];
+	if (out.kind === "measure") return [];
 	const set = new Set<ArrayBuffer>();	// 같은 버퍼를 두 번 넘기면 오류이므로 중복 제거
-	for (const r of out.cycles) for (const a of [r.t, r.vApp, r.vCell, r.i, r.rMin, r.T, r.iCell]) set.add(a.buffer as ArrayBuffer);
+	const sims = out.kind === "measureSim" ? [out.reset, out.set] : out.cycles;
+	for (const r of sims) for (const a of [r.t, r.vApp, r.vCell, r.i, r.rMin, r.T, r.iCell]) set.add(a.buffer as ArrayBuffer);
 	return [...set];
 }
 

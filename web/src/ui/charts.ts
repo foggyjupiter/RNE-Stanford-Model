@@ -396,3 +396,141 @@ export function mcScatterChart(div: HTMLElement, N: ArrayLike<number>, R: ArrayL
 	}];
 	draw(div, data, layout(th, { title: "소자당 필라멘트 수", integer: true, dtick: 1 }, { title: "읽기 저항 (Ω)", log: true }, { hovermode: "closest" }));
 }
+
+// ---------------------------------------------------------------- 측정 데이터 (A50)
+export type MeasuredRole = "forming" | "set" | "reset" | "other";
+
+export interface MeasuredIv {
+	v: ArrayLike<number>;	// [V]
+	i: ArrayLike<number>;	// [A]
+	role: MeasuredRole;
+	label: string;	// 범례·툴팁 (파일 · 스윕)
+}
+
+// 측정 I-V: forming 회색, SET 파랑, RESET 주황, 그 밖은 옅게. sim이 있으면 시뮬레이션을 진한 점선으로 겹친다
+export function measuredIvChart(div: HTMLElement, sweeps: MeasuredIv[], sim?: { reset?: IvSeries; set?: IvSeries }): void {
+	const t = theme();
+	const color: Record<MeasuredRole, string> = { forming: t.muted, set: t.s1, reset: t.s2, other: t.grid };
+	const name: Record<MeasuredRole, string> = { forming: "forming", set: "SET", reset: "RESET", other: "그 밖" };
+	const shown = new Set<MeasuredRole>();
+	const nRole = (r: MeasuredRole): number => sweeps.filter((s) => s.role === r).length;
+	const data: Plotly.Data[] = sweeps.map((s) => {
+		const first = !shown.has(s.role);
+		shown.add(s.role);
+		return {
+			type: "scatter",
+			mode: "lines+markers",
+			x: Array.from(s.v, Math.abs),
+			y: Array.from(s.i, (z) => Math.max(Math.abs(z), 1e-15)),
+			line: { color: color[s.role], width: 1.25 },
+			marker: { color: color[s.role], size: 3 },
+			opacity: s.role === "other" ? 0.6 : overlayOpacity(nRole(s.role)) + 0.15,
+			name: name[s.role],
+			legendgroup: s.role,
+			showlegend: first,
+			customdata: Array.from(s.i, (z) => siFormat(Math.abs(z), "A")),
+			hovertemplate: `${s.label}<br>V = %{x:.2f} V<br>|I| = %{customdata}<extra></extra>`,
+		} as Plotly.Data;
+	});
+	const simTrace = (s: IvSeries, nm: string, c: string): Plotly.Data => ({
+		type: "scatter",
+		mode: "lines",
+		x: Array.from(s.v),
+		y: Array.from(s.i, (z) => Math.max(Math.abs(z), 1e-15)),
+		line: { color: c, width: 2.5, dash: "dash" },
+		name: nm,
+		customdata: Array.from(s.i, (z) => siFormat(Math.abs(z), "A")),
+		hovertemplate: `${nm}<br>V = %{x:.3f} V<br>|I| = %{customdata}<extra></extra>`,
+	});
+	if (sim?.reset) data.push(simTrace(sim.reset, "시뮬 RESET", t.s2));
+	if (sim?.set) data.push(simTrace(sim.set, "시뮬 SET", t.s1));
+	const all: number[] = [];
+	for (const s of sweeps) for (let k = 0; k < s.i.length; k++) all.push(Math.abs(s.i[k]));
+	draw(div, data, layout(t, { title: "전압 (V)" }, { title: "|전류| (A)", log: true, range: logRange(all) }, {
+		hovermode: "closest", showlegend: true, margin: { l: 56, r: 16, t: 28, b: 44 },
+	}));
+}
+
+export interface PointSeries {
+	name: string;
+	x: number[];
+	y: number[];
+	color: 1 | 2 | 0;	// 0 = 회색
+	symbol?: string;
+	text?: string[];	// 툴팁 앞줄
+}
+
+// 점 그래프 (사이클별 값, 두께별 forming 전압 등)
+export function pointsChart(div: HTMLElement, series: PointSeries[], xTitle: string, yTitle: string, o: { yLog?: boolean; unit?: string; xInteger?: boolean } = {}): void {
+	const th = theme();
+	const surface = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
+	const data: Plotly.Data[] = series.map((s) => {
+		const c = s.color === 1 ? th.s1 : s.color === 2 ? th.s2 : th.muted;
+		return {
+			type: "scatter",
+			mode: "markers",
+			name: s.name,
+			x: s.x,
+			y: s.y,
+			marker: { color: c, size: 8, symbol: s.symbol ?? "circle", opacity: 0.8, line: { color: surface, width: 1 } },
+			text: s.text,
+			customdata: s.y.map((y) => (o.unit ? siFormat(y, o.unit) : y.toPrecision(3))),
+			hovertemplate: `${s.text ? "%{text}<br>" : ""}${s.name}: %{customdata}<extra></extra>`,
+		};
+	});
+	draw(div, data, layout(th, { title: xTitle, integer: o.xInteger }, { title: yTitle, log: o.yLog }, {
+		showlegend: series.length > 1, hovermode: "closest", margin: { l: 56, r: 16, t: series.length > 1 ? 28 : 12, b: 44 },
+	}));
+}
+
+// [C] 식 (5)로 뽑은 필라멘트 온도 대 전력 (RESET마다 한 선)
+export function russoChart(div: HTMLElement, rows: { P: number[]; T: number[]; label: string }[]): void {
+	const th = theme();
+	const op = overlayOpacity(rows.length);
+	const data: Plotly.Data[] = rows.map((r, k) => ({
+		type: "scatter",
+		mode: "lines+markers",
+		x: r.P.map((p) => p * 1e3),
+		y: r.T,
+		line: { color: th.s2, width: 1.25 },
+		marker: { color: th.s2, size: 3 },
+		opacity: op + 0.15,
+		name: r.label,
+		showlegend: false,
+		hovertemplate: `${r.label}<br>P = %{x:.2f} mW<br>T = %{y:.0f} K<extra></extra>`,
+		legendgroup: String(k),
+	}));
+	draw(div, data, layout(th, { title: "전력 (mW)" }, { title: "필라멘트 최고 온도 (K)" }, { hovermode: "closest" }));
+}
+
+// 모델 Rth/R0 대 지름 (필라멘트 1개)과 직렬 저항마다의 측정값
+export function ratioChart(div: HTMLElement, phi: number[], ratio: number[], meas: { RL: number; ratio: number }[]): void {
+	const th = theme();
+	const x0 = phi[0] * 1e9;
+	const x1 = phi[phi.length - 1] * 1e9;
+	const data: Plotly.Data[] = [{
+		type: "scatter",
+		mode: "lines+markers",
+		x: phi.map((p) => p * 1e9),
+		y: ratio,
+		name: "2차원 모델",
+		line: { color: th.s1, width: 2 },
+		marker: { color: th.s1, size: 4 },
+		hovertemplate: "φ = %{x:.1f} nm<br>Rth/R0 = %{y:.3g}<extra>모델</extra>",
+	}];
+	meas.forEach((m, k) => {
+		if (!(m.ratio > 0)) return;
+		data.push({
+			type: "scatter",
+			mode: "lines",
+			x: [x0, x1],
+			y: [m.ratio, m.ratio],
+			name: `측정 (R_L ${m.RL} Ω)`,
+			line: { color: th.s2, width: 1.5, dash: k % 2 ? "dot" : "dash" },
+			hovertemplate: `R_L ${m.RL} Ω: %{y:.3g}<extra>측정</extra>`,
+		});
+	});
+	draw(div, data, layout(th, { title: "필라멘트 지름 φ (nm)", log: true }, { title: "Rth / R0 (K/(W·Ω))", log: true }, {
+		showlegend: true, hovermode: "closest", margin: { l: 56, r: 16, t: 28, b: 44 },
+	}));
+}

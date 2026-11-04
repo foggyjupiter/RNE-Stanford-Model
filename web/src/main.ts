@@ -1,14 +1,21 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, OUR_DEVICE, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
+import {
+	DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, KIND_LABELS, OUR_DEVICE, concatResults, filamentCount, median as medianOf, parseSession, readXlsx,
+	stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type MeasureJob, type MeasureOutput, type MeasureSimJob, type MeasureSimOutput,
+	type MeasureSweepIn, type Params, type Session, type SimResult, type StateMetrics, type SweepKind, type TransientOutput,
+} from "./model";
 import { ModelClient, SupersededError } from "./model/client";
-import { downloadPng, histogramChart, ivChart, stateProfileChart, stateTrendChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
+import {
+	downloadPng, histogramChart, ivChart, measuredIvChart, pointsChart, ratioChart, russoChart, stateProfileChart, stateTrendChart, sweepIvChart,
+	mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart, type MeasuredIv, type MeasuredRole,
+} from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
 import { downloadCsv, resultCsv, stateCsv, summaryCsv } from "./ui/export";
 import { meanStd, median, siFormat, timeUnit } from "./ui/format";
 import { PARAM_GROUPS, VAR_FIELDS, type ParamMeta } from "./ui/meta";
-import { DEFAULT_FIXED, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Limit, type Mode } from "./ui/state";
+import { DEFAULT_FIXED, DEFAULT_MEASURE, DEFAULT_PULSE, DEFAULT_SEQUENCE, DEFAULT_SWEEP, MAX_CYCLES, MODE_LABELS, VARIABILITY_CYCLES, initialState, type Limit, type Mode } from "./ui/state";
 
 const state = initialState();
 const client = new ModelClient();
@@ -147,6 +154,7 @@ function waveHint(): string {
 	if (state.mode === "sweep") return "unipolar: 0 → +V_RESET → 0 (제한 없음) → +V_SET → 0 (R_s 직렬). 포밍된 LRS에서 시작";
 	if (state.mode === "pulse") return state.pulse.op === "reset" ? "RESET 펄스: 포밍된 LRS에서 시작, 제한 없음, C_P 포함" : "SET 펄스: RESET 스윕 뒤 HRS에서 시작, R_s 직렬, C_P 포함";
 	if (state.mode === "sequence") return "사이클마다 RESET 펄스 → 읽기 → SET 펄스 → 읽기. 같은 극성 (A21)";
+	if (state.mode === "measure") return "측정 프로그램 엑셀을 올리면 스윕을 forming / SET / RESET / 읽기로 나누고 역산한다 (A50). 데이터는 브라우저 밖으로 나가지 않는다";
 	return "가운데 잘록 구간의 반경과 길이를 정하고 스위칭 없이 읽기 I-V를 본다";
 }
 
@@ -217,6 +225,8 @@ function buildWave(): void {
 		add(numField("edge", "t<sub>edge</sub>", "상승/하강 시간", "ns", 1, 100, 1e-9, () => w.tEdge, (v) => (w.tEdge = v)));
 		limitFields(w, "RESET은 제한 없음").forEach(add);
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
+	} else if (state.mode === "measure") {
+		measurePanel(s, add);
 	} else {
 		const w = state.fixed;
 		const p = state.params;
@@ -231,6 +241,7 @@ function buildWave(): void {
 		if (state.mode === "sweep") state.sweep = { ...DEFAULT_SWEEP };
 		else if (state.mode === "pulse") state.pulse = { ...DEFAULT_PULSE };
 		else if (state.mode === "sequence") state.sequence = { ...DEFAULT_SEQUENCE };
+		else if (state.mode === "measure") state.measure = { ...DEFAULT_MEASURE, thickness: state.measure.thickness };
 		else state.fixed = { ...DEFAULT_FIXED, mc: { ...DEFAULT_MC } };
 		buildWave();
 		schedule(0);
@@ -414,6 +425,7 @@ function iccOf(w: { limit: Limit; icc: number }): number | undefined {
 }
 
 function currentJob(): Job {
+	if (state.mode === "measure") return measureJob();
 	const p: Params = { ...state.params };
 	const variability = state.variabilityOn ? { ...state.variability } : undefined;
 	if (state.mode === "sweep") {
@@ -471,6 +483,13 @@ function setStatus(text: string, busy: boolean, progress?: number): void {
 }
 
 async function compute(): Promise<void> {
+	if (state.mode === "measure" && measureSweeps().length === 0) {
+		lastOut = null;
+		lastMode = "measure";
+		renderMeasureEmpty();
+		setStatus("측정 엑셀(.xlsx)을 올려 주세요", false);
+		return;
+	}
 	const job = currentJob();
 	const mode = state.mode;
 	const cycles = job.kind === "sweep" || job.kind === "sequence" ? job.cycles : 1;
@@ -593,13 +612,20 @@ function render(out: JobOutput): void {
 	stats.replaceChildren();
 	$("csv-summary").hidden = out.kind === "fixed" || lastMode === "pulse";
 	$("csv-state").hidden = out.kind === "fixed";
+	if (out.kind === "measure") {
+		$("csv-summary").hidden = true;
+		$("csv-state").hidden = true;
+		renderMeasure(out, stats);
+		return;
+	}
+	if (out.kind === "measureSim") return;
 	if (out.kind === "fixed") {
 		renderFixed(out, stats);
 		return;
 	}
-	if (lastMode === "sweep") renderSweep(out, stats);
-	else if (lastMode === "pulse") renderPulse(out, stats);
-	else renderSequence(out, stats);
+	if (lastMode === "sweep") renderSweep(out as TransientOutput, stats);
+	else if (lastMode === "pulse") renderPulse(out as TransientOutput, stats);
+	else renderSequence(out as TransientOutput, stats);
 }
 
 // 사이클 사이 상태 카드 (A46): RESET 후 / SET 후 형상, 여러 사이클이면 갭 추이
@@ -746,6 +772,359 @@ function renderFixed(out: FixedOutput, stats: HTMLElement): void {
 		stat("잘록 구간 길이", `${(f.neckLen * 1e9).toFixed(0)} nm`),
 		stat("필라멘트 수 N", filamentCount(state.params).toLocaleString("ko-KR")),
 	);
+}
+
+// ---------------------------------------------------------------- 측정 데이터 모드 (A50)
+let sessions: Session[] = [];
+const kindOverride = new Map<string, SweepKind>();	// "파일#순서" → 손으로 바꾼 분류
+let lastSim: MeasureSimOutput | null = null;
+let simKey = "";	// 시뮬레이션을 계산한 측정 분석 조건 (바뀌면 겹쳐 그리지 않음)
+const EPS0 = 8.8541878128e-12;	// 진공 유전율 [F/m]
+const EPS_HFO2 = 20;	// HfO2 비유전율 (ALD 박막, A51)
+const RL_SENS = [0, 10, 20, 30];	// 직렬 저항 민감도 [ohm]
+
+const swKey = (file: string, index: number): string => `${file}#${index}`;
+
+function kindOf(s: Session["sweeps"][number]): SweepKind {
+	return kindOverride.get(swKey(s.file, s.index)) ?? s.kind;
+}
+
+const groups0 = (): { t: number; n: number }[] => thicknessGroups();
+
+function thicknessGroups(): { t: number; n: number }[] {
+	const m = new Map<number, number>();
+	for (const s of sessions) if (Number.isFinite(s.thickness)) m.set(s.thickness, (m.get(s.thickness) ?? 0) + 1);
+	return [...m.entries()].map(([t, n]) => ({ t, n })).sort((a, b) => a.t - b.t);
+}
+
+function selectedSessions(): Session[] {
+	const t = state.measure.thickness;
+	return sessions.filter((s) => (Number.isFinite(t) ? Math.abs(s.thickness - t) < 1e-12 : true));
+}
+
+function measureSweeps(): MeasureSweepIn[] {
+	const out: MeasureSweepIn[] = [];
+	for (const ses of selectedSessions()) {
+		const first = ses.sweeps.find((x) => kindOf(x) === "forming");
+		for (const s of ses.sweeps) {
+			out.push({ file: s.file, index: s.index, kind: kindOf(s), v: s.v, i: s.i, cc: s.cc, firstForming: s === first && s.r01 > 1e8 });
+		}
+	}
+	return out;
+}
+
+// 측정 소자 값으로 바꾼 파라미터: 두께·면적은 파일에서, C_P = ε0·εr·A/t (A51), 필라멘트 1개
+function measureParams(): Params {
+	const ses = selectedSessions();
+	const t = Number.isFinite(state.measure.thickness) ? state.measure.thickness : state.params.L0;
+	const area = ses.find((s) => Number.isFinite(s.area))?.area ?? state.params.aCell;
+	return { ...state.params, L0: t, aCell: area, nF: 1 / area, CP: EPS0 * EPS_HFO2 * area / t };
+}
+
+function measureJob(): MeasureJob {
+	return { kind: "measure", sweeps: measureSweeps(), params: measureParams(), alpha: state.measure.alpha, rlList: RL_SENS };
+}
+
+async function loadFiles(files: File[]): Promise<void> {
+	let n = 0;
+	const errors: string[] = [];
+	for (const f of files) {
+		if (!/\.xlsx$/i.test(f.name) || f.name.startsWith("~$")) continue;
+		try {
+			const ses = parseSession(f.name, await readXlsx(await f.arrayBuffer()));
+			sessions = sessions.filter((s) => s.file !== ses.file);
+			sessions.push(ses);
+			n++;
+		} catch (e) {
+			errors.push(`${f.name}: ${(e as Error).message}`);
+		}
+	}
+	sessions.sort((a, b) => a.file.localeCompare(b.file, "ko"));
+	const groups = thicknessGroups();
+	if (groups.length && !groups.some((g) => g.t === state.measure.thickness)) {
+		state.measure.thickness = groups.reduce((a, b) => (b.n > a.n ? b : a)).t;
+	}
+	// 물성이 아직 기본(NiO)이면 우리 소자 물성(TiN/HfO2)으로 바꾼다
+	if (state.params.L0 === DEFAULT.L0) {
+		state.params = { ...state.params, ...OUR_DEVICE };
+		for (const fl of paramFields) fl.refresh();
+	}
+	lastSim = null;
+	buildWave();
+	setStatus(errors.length ? `읽지 못한 파일: ${errors.join(", ")}` : `파일 ${n}개를 읽었습니다`, false);
+	schedule(0);
+}
+
+function measurePanel(s: HTMLElement, add: (f: Field) => void): void {
+	const w = state.measure;
+	const drop = el("label", "dropzone");
+	const input = el("input");
+	input.type = "file";
+	input.multiple = true;
+	input.accept = ".xlsx";
+	input.addEventListener("change", () => {
+		if (input.files) void loadFiles([...input.files]);
+	});
+	drop.append(input, el("span", "dropzone-text", sessions.length ? "엑셀 더 올리기 (같은 이름은 바꿔 넣음)" : "측정 엑셀(.xlsx)을 끌어다 놓거나 눌러서 고르기"));
+	drop.addEventListener("dragover", (e) => {
+		e.preventDefault();
+		drop.classList.add("over");
+	});
+	drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+	drop.addEventListener("drop", (e) => {
+		e.preventDefault();
+		drop.classList.remove("over");
+		if (e.dataTransfer?.files) void loadFiles([...e.dataTransfer.files]);
+	});
+	s.append(drop);
+	if (sessions.length) {
+		const nSw = sessions.reduce((a, x) => a + x.sweeps.length, 0);
+		const row = el("div", "btn-row file-row");
+		row.append(el("span", "panel-hint", `파일 ${sessions.length}개 · 스윕 ${nSw}개${groups0().length > 1 ? ` · 두께 ${groups0().map((g) => `${(g.t * 1e9).toFixed(0)} nm ${g.n}개`).join(", ")}` : ""}`));
+		const clear = el("button", "link-btn", "모두 지우기");
+		clear.type = "button";
+		clear.addEventListener("click", () => {
+			sessions = [];
+			kindOverride.clear();
+			lastSim = null;
+			buildWave();
+			schedule(0);
+		});
+		row.append(clear);
+		s.append(row);
+		const groups = thicknessGroups();
+		if (groups.length > 1) {
+			const seg = makeSegmented<string>("두께", groups.map((g) => [String(g.t), `${(g.t * 1e9).toFixed(0)} nm`]), () => String(w.thickness), (v) => {
+				w.thickness = Number(v);
+				lastSim = null;
+				schedule(0);
+			});
+			seg.el.classList.add("seg-block");
+			add(seg);
+		}
+	}
+	add(numField("mRate", "dV/dt", "평균 램프 속도 (계단 / 머무는 시간)", "V/s", 0.01, 100, 1, () => w.rate, (v) => (w.rate = v), { log: true, note: "가정 (A50)" }));
+	add(numField("mAlpha", "α", "필라멘트 저항 온도 계수", "10⁻³/K", 0.1, 5, 1e-3, () => w.alpha, (v) => (w.alpha = v), { log: true, note: "[C] NiO 1.7, HfOₓ 미확인" }));
+	add(numField("mRL", "R<sub>L</sub>", "직렬 저항 (프로브·배선)", "Ω", 0, 60, 1, () => state.params.RL, (v) => {
+		state.params = { ...state.params, RL: v };
+		for (const fl of paramFields) fl.refresh();
+	}, { note: "추정 30 (A53)" }));
+	s.append(el("p", "panel-hint", "두께·면적은 파일에서, C_P는 ε₀·20·A/t로 자동. 물성은 아래 모델 파라미터 (A51)"));
+	// 시뮬레이션 겹쳐 보기
+	const box = el("div", "subpanel");
+	box.append(el("h3", "subpanel-title", "시뮬레이션 겹쳐 보기"));
+	box.append(el("p", "panel-hint", "역산한 지름·산화막 비저항·R_L로 RESET → SET을 측정과 같은 램프로 계산해 겹친다. 수십 초~수 분"));
+	const icc = numField("mIcc", "I<sub>CC</sub>", "SET 전류 제한 (빈칸이면 측정 SET 중앙값)", "µA", 1, 1e4, 1e-6, () => (Number.isFinite(w.icc) ? w.icc : medianCc()), (v) => (w.icc = v), { log: true });
+	waveFields.push(icc);
+	box.append(icc.el);
+	box.append(makeSwitch("패드 정전용량 C_P 포함 (A51)", () => w.includeCp, (on) => (w.includeCp = on)).el);
+	box.append(makeSwitch("E_a를 측정 V_set에 먼저 맞추기 (A54)", () => w.fitEa, (on) => (w.fitEa = on)).el);
+	const run = el("button", "btn", "시뮬레이션 실행");
+	run.type = "button";
+	run.disabled = sessions.length === 0;
+	run.addEventListener("click", () => void runMeasureSim());
+	box.append(run);
+	s.append(box);
+}
+
+function medianCc(): number {
+	const cc = measureSweeps().filter((x) => x.kind === "set").map((x) => x.cc);
+	return cc.length ? medianOf(cc) : 1e-5;
+}
+
+function measureCondKey(): string {
+	return JSON.stringify([state.measure.thickness, state.measure.rate, state.measure.alpha, state.params, [...kindOverride.entries()]]);
+}
+
+async function runMeasureSim(): Promise<void> {
+	const out = lastOut && lastOut.kind === "measure" ? lastOut : null;
+	if (!out) return;
+	const m = out.sens[out.main];
+	if (!Number.isFinite(m.phi)) {
+		setStatus("필라멘트 지름을 정하지 못해 시뮬레이션을 할 수 없습니다 (R_L을 줄여 보세요)", false);
+		return;
+	}
+	const p0 = measureParams();
+	const n = m.separable ? Math.max(1, Math.round(m.N)) : 1;
+	const params: Params = { ...p0, phi0: m.phi, nF: n / p0.aCell, rhoOx: Number.isFinite(out.rhoOx) ? out.rhoOx : p0.rhoOx };
+	const job: MeasureSimJob = {
+		kind: "measureSim", params, rate: state.measure.rate,
+		vResetMax: (Number.isFinite(out.vResetMed) ? out.vResetMed : 1.5) + 0.5,
+		vSetMax: (Number.isFinite(out.vSetMed) ? out.vSetMed : 3) + 1.0,
+		icc: Number.isFinite(state.measure.icc) ? state.measure.icc : medianCc(),
+		includeCp: state.measure.includeCp, fitEa: state.measure.fitEa, vSetTarget: out.vSetMed,
+	};
+	const t0 = performance.now();
+	setStatus("시뮬레이션 중…", true, 0);
+	try {
+		const res = await client.run(job, (done, total) => setStatus(`시뮬레이션 중… ${Math.round(100 * done / total)}%${job.fitEa ? " (E_a 맞추는 중)" : ""}`, true, done / total));
+		if (res.kind !== "measureSim") return;
+		lastSim = res;
+		simKey = measureCondKey();
+		cardKey = "";
+		render(out);
+		setStatus(`시뮬레이션 ${((performance.now() - t0) / 1000).toFixed(1)} s`, false);
+	} catch (e) {
+		if (e instanceof SupersededError) return;
+		setStatus(`시뮬레이션 실패: ${(e as Error).message}`, false);
+	}
+}
+
+function renderMeasureEmpty(): void {
+	$("stats").replaceChildren();
+	cardKey = "";
+	for (const div of cards.values()) purge(div);
+	cards.clear();
+	const box = $("charts");
+	const card = el("div", "card wide empty");
+	card.append(
+		el("p", "empty-title", "측정 엑셀을 왼쪽에 올리면 여기에 결과가 나옵니다"),
+		el("p", "panel-hint", "형식: 파일 하나 = 소자 하나, 시트 하나 = 측정 순서대로 한 스윕 (Sweep Name / Sweep Range / Area Constant / Compliance I, 그 아래 Voltage·Current 열). 파일 이름의 \"6nm\" 같은 글자로 두께를 읽습니다."),
+	);
+	box.replaceChildren(card);
+}
+
+function roleOf(k: SweepKind): MeasuredRole {
+	if (k === "forming") return "forming";
+	if (k === "set") return "set";
+	if (k === "reset") return "reset";
+	return "other";
+}
+
+function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
+	const sim = lastSim && simKey === measureCondKey() ? lastSim : null;
+	const specs: CardSpec[] = [
+		{ id: "iv", title: "측정 I-V", sub: sim ? "점선: 역산값으로 계산한 시뮬레이션" : "forming 회색 · SET 파랑 · RESET 주황", wide: true, tall: true },
+		{ id: "res", title: "사이클별 저항", sub: "RESET 시작 LRS / SET 시작 HRS, R_L 뺀 값" },
+		{ id: "volt", title: "사이클별 스위칭 전압", sub: "V_set (0.9·CC) / V_reset (전류 최대점)" },
+		{ id: "russo", title: "RESET 직전 필라멘트 온도", sub: "[C] 식 (5), α·R_L 가정" },
+		{ id: "ratio", title: "열저항/저항: 측정 대 모델", sub: "N개 병렬이어도 같은 값 (A43)" },
+		{ id: "form", title: "두께별 forming 전압", sub: "올린 모든 파일" },
+		{ id: "sens", title: "직렬 저항 민감도", sub: "R_L 가정에 따라 바뀌는 값" },
+	];
+	if (sim) specs.push({ id: "state", title: "시뮬레이션: RESET 후 / SET 후 필라멘트 형상", sub: "r_b(z)" }, ...timeCards("시뮬레이션 RESET → SET"));
+	specs.push({ id: "table", title: "스윕 분류", sub: "분류를 바꾸면 다시 계산", wide: true });
+	ensureCards(specs);
+	// I-V
+	const ivs: MeasuredIv[] = [];
+	for (const ses of selectedSessions()) {
+		for (const s of ses.sweeps) ivs.push({ v: s.v, i: s.i, role: roleOf(kindOf(s)), label: `${s.file} · ${s.index}번 (${KIND_LABELS[kindOf(s)]})` });
+	}
+	measuredIvChart(cards.get("iv")!, ivs, sim ? { reset: { v: sim.reset.vApp, i: sim.reset.i }, set: { v: sim.set.vApp, i: sim.set.i } } : undefined);
+	// 사이클별 (측정 순서)
+	const order = new Map<string, number>();
+	let k = 0;
+	for (const ses of selectedSessions()) for (const s of ses.sweeps) order.set(swKey(s.file, s.index), ++k);
+	const ord = (f: string, i: number): number => order.get(swKey(f, i)) ?? NaN;
+	pointsChart(cards.get("res")!, [
+		{ name: "R_LRS", x: out.resets.map((r) => ord(r.file, r.index)), y: out.resets.map((r) => r.R0), color: 1, text: out.resets.map((r) => `${r.file} · ${r.index}번`) },
+		{ name: "R_HRS", x: out.sets.map((r) => ord(r.file, r.index)), y: out.sets.map((r) => r.rHrs), color: 2, symbol: "square", text: out.sets.map((r) => `${r.file} · ${r.index}번`) },
+	], "측정 순서", "저항 (Ω)", { yLog: true, unit: "Ω", xInteger: true });
+	pointsChart(cards.get("volt")!, [
+		{ name: "V_set", x: out.sets.map((r) => ord(r.file, r.index)), y: out.sets.map((r) => r.vSet), color: 1, text: out.sets.map((r) => `${r.file} · CC ${siFormat(r.cc, "A")}`) },
+		{ name: "V_reset", x: out.resets.map((r) => ord(r.file, r.index)), y: out.resets.map((r) => r.vReset), color: 2, symbol: "square", text: out.resets.map((r) => r.file) },
+	], "측정 순서", "전압 (V)", { unit: "V", xInteger: true });
+	russoChart(cards.get("russo")!, out.resets.map((r) => ({ P: r.P, T: r.T, label: `${r.file} · ${r.index}번` })));
+	ratioChart(cards.get("ratio")!, out.curve.phi, out.curve.ratio, out.sens.map((s) => ({ RL: s.RL, ratio: s.ratio })));
+	// forming 대 두께 (모든 파일)
+	const fx: number[] = [];
+	const fy: number[] = [];
+	const ft: string[] = [];
+	for (const ses of sessions) {
+		const f = ses.sweeps.find((x) => kindOf(x) === "forming" && x.r01 > 1e8);
+		if (!f || !Number.isFinite(ses.thickness)) continue;
+		const hit = f.i.findIndex((x) => Math.abs(x) >= 0.9 * f.cc);
+		if (hit < 0) continue;
+		fx.push(ses.thickness * 1e9);
+		fy.push(Math.abs(f.v[hit]));
+		ft.push(ses.file);
+	}
+	pointsChart(cards.get("form")!, [{ name: "V_forming", x: fx, y: fy, color: 0, text: ft }], "산화막 두께 (nm)", "forming 전압 (V)", { unit: "V" });
+	// 민감도 표
+	const sens = cards.get("sens")!;
+	const tbl = el("table", "data-table");
+	tbl.innerHTML = "<thead><tr><th>R_L (Ω)</th><th>R0 (Ω)</th><th>T_crit (K)</th><th>Rth (K/W)</th><th>Rth/R0</th><th>지름 φ</th><th>개수</th></tr></thead>";
+	const tb = el("tbody");
+	out.sens.forEach((s, j) => {
+		const tr = el("tr", j === out.main ? "main-row" : undefined);
+		const cells = [
+			`${s.RL}`, s.R0.toFixed(1), s.tCrit.toFixed(0), s.rth.toExponential(2), s.ratio.toPrecision(3),
+			Number.isFinite(s.phi) ? `${(s.phi * 1e9).toFixed(1)} nm` : "—", s.separable ? s.N.toFixed(2) : "1 (가정)",
+		];
+		for (const c of cells) tr.append(el("td", undefined, c));
+		tb.append(tr);
+	});
+	tbl.append(tb);
+	sens.replaceChildren(tbl, el("p", "panel-hint", out.sens.some((s) => !s.separable)
+		? "측정 Rth/R0가 모델 범위 밖인 줄은 지름과 개수를 나눌 수 없어 필라멘트 1개로 보고 R0로만 지름을 정했습니다 (A43, A53)."
+		: "지름은 Rth/R0, 개수는 R0로 정했습니다 (A43)."));
+	// 분류 표
+	const tdiv = cards.get("table")!;
+	const t2 = el("table", "data-table");
+	t2.innerHTML = "<thead><tr><th>파일</th><th>#</th><th>분류</th><th>점</th><th>V 끝</th><th>CC</th><th>R(0.1 V)</th></tr></thead>";
+	const body = el("tbody");
+	const kinds = Object.keys(KIND_LABELS) as SweepKind[];
+	for (const ses of selectedSessions()) {
+		for (const s of ses.sweeps) {
+			const tr = el("tr");
+			const sel = el("select");
+			for (const kk of kinds) {
+				const o = el("option", undefined, KIND_LABELS[kk]);
+				o.value = kk;
+				if (kk === kindOf(s)) o.selected = true;
+				sel.append(o);
+			}
+			sel.addEventListener("change", () => {
+				const v = sel.value as SweepKind;
+				if (v === s.kind) kindOverride.delete(swKey(s.file, s.index));
+				else kindOverride.set(swKey(s.file, s.index), v);
+				schedule(0);
+			});
+			const td = el("td");
+			td.append(sel);
+			tr.append(el("td", undefined, s.file), el("td", undefined, String(s.index)), td, el("td", undefined, String(s.v.length)),
+				el("td", undefined, `${s.v[s.v.length - 1]}`), el("td", undefined, siFormat(s.cc, "A")), el("td", undefined, Number.isFinite(s.r01) ? siFormat(s.r01, "Ω") : "—"));
+			body.append(tr);
+		}
+	}
+	t2.append(body);
+	tdiv.replaceChildren(t2);
+	tdiv.classList.add("table-scroll");
+	sens.classList.add("table-host");
+	// 시뮬레이션
+	if (sim) {
+		const g = sim.set.grid;
+		stateProfileChart(cards.get("state")!, g.zFaces, [{ rb: sim.reset.rbEnd, kind: "hrs", cycle: 1 }, { rb: sim.set.rbEnd, kind: "lrs", cycle: 1 }]);
+		const j = concatResults([sim.reset, sim.set]);
+		drawTime(Array.from(j.t), Array.from(j.vApp), Array.from(j.iCell), Array.from(j.rMin), Array.from(j.T), j.hot, j.grid, true);
+	}
+	// 요약
+	const m = out.sens[out.main];
+	const nRes = out.resets.length;
+	const nSet = out.sets.length;
+	stats.append(
+		stat("스윕", `RESET ${nRes} · SET ${nSet}`, `포밍 전 측정 ${out.rPristine.length}개`),
+		stat("산화막 비저항", Number.isFinite(out.rhoOx) ? `${out.rhoOx.toExponential(2)} Ω·m` : "—", "포밍 전 0.1 V 저항 (A44)"),
+		stat("V_RESET", `${out.vResetMed.toFixed(2)} V`, `I_RESET ${siFormat(out.iResetMed, "A")} (중앙값)`),
+		stat("R_LRS", siFormat(m.R0, "Ω"), `R_L ${state.params.RL} Ω 뺀 값`),
+		stat("T_crit", `${m.tCrit.toFixed(0)} K`, `Rth ${m.rth.toExponential(2)} K/W`),
+		stat("V_SET", `${out.vSetMed.toFixed(2)} V`, "중앙값, HRS에서 시작한 SET"),
+		stat("R_HRS", siFormat(out.rHrsMed, "Ω"), Number.isFinite(out.rNeck) ? `잘록 반경 ${(out.rNeck * 1e9).toFixed(2)} nm` : "연속체 모델로 설명 안 됨 (원자 크기 이하)"),
+		stat("필라멘트", Number.isFinite(m.phi) ? `${(m.phi * 1e9).toFixed(0)} nm` : "—", m.separable ? `${m.N.toFixed(1)}개` : "1개로 가정 (개수 분리 불가)"),
+	);
+	if (sim) {
+		let imax = 0;
+		for (const x of sim.set.iCell) imax = Math.max(imax, Math.abs(x));
+		const out1 = sim.eaEV > 1.2 || sim.eaEV < 0.5;
+		let kr = 0;
+		for (let q = 1; q < sim.reset.i.length; q++) if (Math.abs(sim.reset.i[q]) > Math.abs(sim.reset.i[kr])) kr = q;
+		stats.append(
+			stat("시뮬 V_RESET", `${sim.reset.vApp[kr].toFixed(2)} V`, `측정 ${out.vResetMed.toFixed(2)} V · I ${siFormat(Math.abs(sim.reset.i[kr]), "A")}`),
+			stat("시뮬 E_a", `${sim.eaEV.toFixed(3)} eV`, `${sim.fitted ? "V_set에 맞춤" : "입력값"}${out1 ? " · Table 3 범위 밖" : ""}`),
+			stat("시뮬 HRS / LRS", `${siFormat(sim.rHrs, "Ω")} / ${siFormat(sim.rLrs, "Ω")}`, "0.1 V 읽기 (R_L 포함)"),
+			stat("SET 순간 필라멘트 전류", siFormat(imax, "A"), state.measure.includeCp ? "C_P 방전 포함" : "C_P 없음"),
+		);
+	}
 }
 
 // ---------------------------------------------------------------- 내보내기
