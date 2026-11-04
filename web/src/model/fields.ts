@@ -383,7 +383,8 @@ export class FieldSolver {
 				dvg = Math.abs(vgNext - vg);
 				vg = vgNext;
 			}
-			if (dT < tol && dvg < 1e-4 * Math.max(va, 1e-3)) break;
+			// V_gap은 두 구현이 같은 반복 횟수에서 멈추도록 촘촘히 (반복마다 약 0.6배로 줄어 40회 안에 수렴)
+			if (dT < tol && dvg < 1e-9 * Math.max(va, 1e-3)) break;
 		}
 		this.tLast = T;
 		if (hop) this.vgLast = vg;

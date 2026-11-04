@@ -357,7 +357,8 @@ class FieldSolver:
 				vg_next = math.exp(0.5 * (math.log(max(vg, 1e-9)) + math.log(vg_new)))
 				dvg = abs(vg_next - vg)
 				vg = vg_next
-			if dT < tol and dvg < 1e-4 * max(va, 1e-3):
+			# V_gap은 두 구현이 같은 반복 횟수에서 멈추도록 촘촘히 (반복마다 약 0.6배로 줄어 40회 안에 수렴)
+			if dT < tol and dvg < 1e-9 * max(va, 1e-3):
 				break
 		self.T_last = T
 		if hop:
