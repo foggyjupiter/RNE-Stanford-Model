@@ -79,7 +79,7 @@ describe("golden: 정상 상태", () => {
 
 	test("fields_hop.csv: 갭 호핑 전도 (A55)", () => {
 		const f = loadCsv("fields_hop.csv");
-		const p = { ...P, ...OUR_DEVICE, phi0: 78e-9, rhoOx: 1.84e10 } as Params;
+		const p = { ...P, ...OUR_DEVICE, phi0: 78e-9, rhoOx: 1.84e10, hop: 1 } as Params;
 		const g = makeGrid(p, DEFAULT_GRID);
 		for (let k = 0; k < f.v_V.length; k++) {
 			const fs = new FieldSolver(g, p, gapProfile(78e-9, f.gap_m[k], p));

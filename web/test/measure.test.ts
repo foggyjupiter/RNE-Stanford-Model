@@ -89,7 +89,7 @@ describe("측정 데이터: 열 보정과 호핑 갭", () => {
 
 	test("fitGap (A55)", () => {
 		const g = G.fit_gap;
-		const gap = fitGap(g.R_hrs, g.phi, 1, { ...P, kappaEl: g.kappa_el, rhoOx: g.rho_ox });
+		const gap = fitGap(g.R_hrs, g.phi, 1, { ...P, kappaEl: g.kappa_el, rhoOx: g.rho_ox, hop: 1 });
 		expect(Math.abs(gap - g.gap)).toBeLessThan(0.02e-9);
 	}, 120000);
 });

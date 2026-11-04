@@ -1131,7 +1131,7 @@ function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
 		stat("열 보정 κ_el", Number.isFinite(out.kappaEl) ? `${out.kappaEl.toFixed(0)} W/(K·m)` : "—",
 			Number.isFinite(out.kappaEl) ? `측정 Rth에 맞춤${out.kappaEl > 27 || out.kappaEl < 7 ? " · TiN 문헌 7–27 밖 [8], [10]" : ""} (A56)` : "전극층이 없거나 맞출 수 없음"),
 		stat("갭 (HRS)", Number.isFinite(out.gap) ? `${(out.gap * 1e9).toFixed(1)} nm` : "—",
-			state.params.hop ? `호핑 [D] 식 (6), g_T ${(state.params.gT * 1e9).toFixed(2)} nm 가정, 굵은 필라멘트 끝 기준 (A55)` : "호핑 전도를 켜야 계산 (A55)"),
+			`호핑 [D] 식 (6), g_T ${(state.params.gT * 1e9).toFixed(2)} nm 가정, 굵은 필라멘트 끝 기준 (A55)`),
 		stat("필라멘트", Number.isFinite(m.phi) ? `${(m.phi * 1e9).toFixed(0)} nm` : "—", m.separable ? `${m.N.toFixed(1)}개` : "1개로 가정 (개수 분리 불가)"),
 	);
 	if (sim) {

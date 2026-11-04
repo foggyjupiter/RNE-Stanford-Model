@@ -141,7 +141,8 @@ export function runMeasure(job: MeasureJob, onProgress?: (done: number, total: n
 		const nk = fitNeck(rHrsMed, phiUse, Math.max(1, m0.N), p, gs);
 		rNeck = nk.rNeck;
 		neckLen = nk.neckLen;
-		if (p.hop) gap = fitGap(rHrsMed, phiUse, Math.max(1, m0.N), p, gs);
+		// 갭 역산은 정적 계산이라 호핑을 켜서 푼다 (과도 계산의 호핑 설정과 무관, A55)
+		gap = fitGap(rHrsMed, phiUse, Math.max(1, m0.N), { ...p, hop: 1 }, gs);
 	}
 	onProgress?.(1, 1);
 	return {

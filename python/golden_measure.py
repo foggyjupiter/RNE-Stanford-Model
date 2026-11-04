@@ -91,7 +91,7 @@ out["fit_lrs"] = {"R0": 30.0, "Rth": 9e4, "phi": fit.phi, "N": fit.N}
 # 열 보정 (A56)과 호핑 갭 (A55)
 k, phi_k = inv.fit_kappa_el(30.0, 2.87e4, p, 800.0, 1.7e-3)
 out["fit_kappa_el"] = {"R0": 30.0, "Rth": 2.87e4, "T_target": 800.0, "kappa_el": k, "phi": phi_k}
-pk = replace(p, kappa_el=k, rho_ox=1.84e10)
+pk = replace(p, kappa_el=k, rho_ox=1.84e10, hop=1)
 out["fit_gap"] = {"R_hrs": 6.4e5, "phi": phi_k, "kappa_el": k, "rho_ox": 1.84e10, "gap": inv.fit_gap(6.4e5, phi_k, 1.0, pk).gap}
 out["params"] = {"A_cell": p.A_cell, "L0": p.L0}
 json.dump(out, open(GOLDEN / "measure.json", "w"), indent=1)
