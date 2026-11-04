@@ -25,6 +25,10 @@ export interface Params {
 	dr: number;	// SET: 측면 성장 단위 Delta_r [m] (A4)
 	Z: number;	// 전하수 [-]
 	setField: number;	// SET 성장식의 전계: 0 = 경계 국소 전계 (A33), 1 = 산화막 평균 전계 V_ox/L0 (A54)
+	hop: number;	// 갭 호핑 전도 (A55): 0 = 끔, 1 = [D] 식 (6)을 끊긴 구간에 더함
+	I0: number;	// 호핑 전류 밀도 [A/m^2], [M] Table 3
+	VT: number;	// 특성 전압 [V], [M] Table 3
+	gT: number;	// 호핑 감쇠 길이 [m], 피팅값 (A3, A55)
 	RL: number;	// 전극 접촉 저항 [ohm]
 	CP: number;	// 전극 기생 정전용량 [F]
 	tEl: number;	// 전극 두께 [m]. 0이면 [R]의 이상적 전극 (A41)
@@ -52,6 +56,10 @@ export const DEFAULT: Readonly<Params> = Object.freeze({
 	dr: 0.25e-9,	// [m] (A4)
 	Z: 1,	// [-]
 	setField: 0,	// 국소 전계 (A33)
+	hop: 0,	// 끔
+	I0: 1e13,	// [A/m^2], [M] Table 3
+	VT: 0.4,	// [V], [M] Table 3
+	gT: 0.25e-9,	// [m], 이전 bipolar 단계의 피팅값 (A3, A55)
 	RL: 20,	// [ohm], [M] Table 3
 	CP: 20e-15,	// [F], [M] Table 3
 	tEl: 0,	// [m], 이상적 전극 [R]
@@ -92,6 +100,7 @@ export const OUR_DEVICE: Readonly<Partial<Params>> = Object.freeze({
 	CP: 8.8541878128e-12 * 20 * 20800e-12 / 6e-9,	// [F]
 	RL: 30,	// [ohm], 추정
 	setField: 1,	// 평균 전계 (A54)
+	hop: 1,	// 갭 호핑 전도 (A55)
 	Ea: 1.661 * EV,	// [J], 실측 V_set 2.7 V (CC 10 uA, 1 V/s 가정)에 맞춘 값. Table 3 범위 [0.5, 1.2] eV 밖 (A54)
 });
 

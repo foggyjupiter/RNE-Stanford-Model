@@ -15,7 +15,7 @@
 import { describe, expect, test } from "vitest";
 import { loadCsv } from "./golden";
 import {
-	DEFAULT, DEFAULT_GRID, FieldSolver, TIN_ELECTRODE, deviceRead, ivFixedState, makeGrid, neckProfile, pulseWaveform, rampWaveform,
+	DEFAULT, DEFAULT_GRID, FieldSolver, OUR_DEVICE, TIN_ELECTRODE, gapProfile, deviceRead, ivFixedState, makeGrid, neckProfile, pulseWaveform, rampWaveform,
 	readResistance, resetRampWaveform, simulate, sweepWaveform, type Params, type SimOptions, type Waveform,
 } from "../src/model";
 
@@ -77,6 +77,19 @@ describe("golden: 정상 상태", () => {
 		}
 	});
 
+	test("fields_hop.csv: 갭 호핑 전도 (A55)", () => {
+		const f = loadCsv("fields_hop.csv");
+		const p = { ...P, ...OUR_DEVICE, phi0: 78e-9, rhoOx: 1.84e10 } as Params;
+		const g = makeGrid(p, DEFAULT_GRID);
+		for (let k = 0; k < f.v_V.length; k++) {
+			const fs = new FieldSolver(g, p, gapProfile(78e-9, f.gap_m[k], p));
+			const fld = fs.solve(f.v_V[k]);
+			expect(Math.abs(fs.gHop - f.g_hop_m[k]) / f.g_hop_m[k]).toBeLessThan(1e-12);
+			expect(Math.abs(fld.I - f.i_A[k]) / f.i_A[k]).toBeLessThan(1e-8);
+			expect(Math.abs(fld.tMax - f.T_max_K[k]) / f.T_max_K[k]).toBeLessThan(1e-8);
+		}
+	});
+
 	test("read_resistance.csv: 0.1 V 읽기 저항", () => {
 		const r = loadCsv("read_resistance.csv");
 		for (let k = 0; k < r.R_ohm.length; k++) {
@@ -124,5 +137,31 @@ describe("golden: 과도 응답", () => {
 			expect(windowedRelErr(r.t, r.rMin, g.t_s, g.r_min_m, 1e-9)).toBeLessThan(1e-5);
 			expect(windowedRelErr(r.t, r.T, g.t_s, g.T_max_K, 0)).toBeLessThan(1e-5);
 		}, 120000);
+	}
+});
+
+// 우리 소자 (A51-A54): 평균 전계 SET, CC에 닿으면 멈춤, 패드 정전용량 방전. 허용 오차는 위와 같다.
+// 필라멘트 전류(i_cell)도 비교한다 (C_P 방전이 있으면 단자 전류와 다름). 반경 하한은 0.1 nm
+// (6 nm 소자는 RESET 뒤 가장 가는 곳이 0.04 nm라 1 nm 하한이면 비교가 무의미)
+describe("golden: 우리 소자", () => {
+	const Pour = { ...P, ...OUR_DEVICE } as Params;
+	const cases: [string, Waveform, boolean, SimOptions][] = [
+		["our_reset_ramp.csv", rampWaveform("reset", 1.5, 1.0), false, {}],
+		["our_set_cc_stop.csv", rampWaveform("set", 5.0, 1.0), true, { iCc: 1e-4, ccHold: 0.1 }],
+		["our_set_cc_stop_cp.csv", rampWaveform("set", 5.0, 1.0), true, { iCc: 1e-4, ccHold: 0.1, includeCp: true, dvcMax: 0.05 }],
+	];
+	for (const [file, wf, fromHrs, opt] of cases) {
+		test(file, () => {
+			const g = loadCsv(file);
+			const rb0 = fromHrs ? Float64Array.from(loadCsv("our_hrs_profile.csv").rb_m) : null;
+			const r = simulate(wf, rb0, Pour, opt);
+			expect(r.steps).toBe(g.t_s.length);
+			const imax = Math.max(...g.i_A.map(Math.abs));
+			const cmax = Math.max(...g.i_cell_A.map(Math.abs));
+			expect(windowedRelErr(r.t, r.i, g.t_s, g.i_A, 1e-3 * imax)).toBeLessThan(1e-5);
+			expect(windowedRelErr(r.t, r.iCell, g.t_s, g.i_cell_A, 1e-3 * cmax)).toBeLessThan(1e-5);
+			expect(windowedRelErr(r.t, r.rMin, g.t_s, g.r_min_m, 1e-10)).toBeLessThan(1e-5);
+			expect(windowedRelErr(r.t, r.T, g.t_s, g.T_max_K, 0)).toBeLessThan(1e-5);
+		}, 300000);
 	}
 });

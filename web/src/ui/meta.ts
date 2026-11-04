@@ -79,6 +79,16 @@ export const PARAM_GROUPS: ParamGroup[] = [
 		],
 	},
 	{
+		id: "hop",
+		title: "갭 호핑 (HRS)",
+		hint: "[D] 식 (6): I = I₀·(πw²/4)·exp(−g/g_T)·sinh(V_gap/V_T)를 끊긴 구간에 더한다 (A55)",
+		items: [
+			{ key: "gT", symbol: "g<sub>T</sub>", label: "호핑 감쇠 길이", unit: "nm", scale: 1e-9, min: 0.1, max: 0.6, note: "피팅값 (A3, A55)" },
+			{ key: "I0", symbol: "I<sub>0</sub>", label: "호핑 전류 밀도", unit: "A/m²", scale: 1, min: 1e10, max: 1e15, log: true, note: "[M] Table 3" },
+			{ key: "VT", symbol: "V<sub>T</sub>", label: "특성 전압", unit: "V", scale: 1, min: 0.1, max: 1, fixed: true, note: "[M] Table 3" },
+		],
+	},
+	{
 		id: "electrode",
 		title: "전극",
 		hint: "두께 0이면 이상적 열 배출 [6]. 두께를 주면 전극층까지 2차원으로 푼다 (A41, [11])",

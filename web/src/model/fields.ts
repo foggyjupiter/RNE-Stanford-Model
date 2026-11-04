@@ -217,6 +217,12 @@ export class FieldSolver {
 	private readonly nb: number;
 	private readonly kind: Uint8Array;	// 0 산화막·CF, 1 전극, 2 계산에서 뺀 셀
 	tLast: Float64Array | null = null;	// 전체 격자 온도 (다음 풀이의 초기값)
+	// 갭 호핑 전도 (A55)
+	gHop = 0;	// 갭 길이 g [m] (0이면 호핑 없음)
+	private aHop = 0;	// 호핑 단면 π r_s² [m²]
+	private hopW: Float64Array | null = null;	// 산화막 셀마다 (1/w_j)·(r_s 안 면적 비율)
+	private hopJ: [number, number] = [0, 0];	// 갭 첫·끝 행
+	vgLast: number | null = null;	// 지난 풀이의 V_gap [V]
 
 	constructor(private readonly g: Grid, private readonly p: Params, rb: ArrayLike<number>, gs: GridSpec = DEFAULT_GRID) {
 		this.fr = cfFraction(g, rb);
@@ -245,6 +251,53 @@ export class FieldSolver {
 		}
 		this.th = assemble(gf, kappa);
 		if (!this.th.A.factor()) throw new Error("열 행렬 분해 실패");
+		this.setupHop(rb);
+	}
+
+	// 반경이 Δr(= VO 간격 a)보다 작은 행을 갭으로 보고 w_j = 1 − r_b/Δr로 g = Σ w_j dz_j.
+	// 호핑 단면은 갭 양옆 CF 끝 반경 중 작은 쪽 r_s 안 ([D] 식 (6)의 π w²/4, w = 2 r_s) (A55)
+	private setupHop(rb: ArrayLike<number>): void {
+		const { g, p } = this;
+		if (!p.hop) return;
+		const w = new Float64Array(g.nz);
+		let j0 = -1;
+		let j1 = -1;
+		for (let j = 0; j < g.nz; j++) {
+			w[j] = Math.min(Math.max(1 - rb[j] / p.dr, 0), 1);
+			if (w[j] > 0) {
+				if (j0 < 0) j0 = j;
+				j1 = j;
+			}
+		}
+		if (j0 < 0 || (j0 === 0 && j1 === g.nz - 1)) return;
+		const ends: number[] = [];
+		if (j0 - 1 >= 0) ends.push(rb[j0 - 1]);
+		if (j1 + 1 < g.nz) ends.push(rb[j1 + 1]);
+		const rs = Math.min(...ends);
+		if (!(rs > 0)) return;
+		let gl = 0;
+		for (let j = 0; j < g.nz; j++) gl += w[j] * (g.zFaces[j + 1] - g.zFaces[j]);
+		const hw = new Float64Array(g.nz * g.nr);
+		for (let j = 0; j < g.nz; j++) {
+			if (!(w[j] > 0)) continue;
+			for (let i = 0; i < g.nr; i++) {
+				const r0 = g.rFaces[i];
+				const r1 = g.rFaces[i + 1];
+				const fr = Math.min(Math.max((rs * rs - r0 * r0) / (r1 * r1 - r0 * r0), 0), 1);
+				hw[j * g.nr + i] = fr / Math.max(w[j], 1e-12);
+			}
+		}
+		this.gHop = gl;
+		this.aHop = Math.PI * rs * rs;
+		this.hopW = hw;
+		this.hopJ = [j0, j1];
+	}
+
+	// 갭 호핑 컨덕턴스 I_hop/V_gap [S] ([D] 식 (6))
+	gapConductance(vg: number): number {
+		const p = this.p;
+		const x = Math.max(Math.abs(vg), 1e-9);
+		return p.I0 * this.aHop * Math.exp(-this.gHop / p.gT) * Math.sinh(x / p.VT) / x;
 	}
 
 	// 셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭.
@@ -264,13 +317,19 @@ export class FieldSolver {
 			if (kind[m] === 1) sigma[m] = 1 / p.rhoEl;
 			else if (kind[m] === 2) sigma[m] = OFF / p.rhoOx;
 		}
+		const hop = this.gHop > 0 && this.hopW !== null;
+		let vg = hop ? this.vgLast ?? va : 0;	// V_gap 초기값: 지난 풀이 값, 없으면 인가 전압 전부
+		const jl = this.hopJ[0] - 1 + nb;
+		const jh = this.hopJ[1] + 1 + nb;
 		for (let it = 0; it < maxIter; it++) {
+			const sHop = hop ? this.gapConductance(vg) * this.gHop / this.aHop : 0;
 			for (let jo = 0; jo < g.nz; jo++) {
 				for (let i = 0; i < g.nr; i++) {
 					const m = (jo + nb) * nr + i;
 					const fv = fr[jo * g.nr + i];
 					const rho = p.rhoCf * (1 + p.alphaT * (T[m] - p.T0));
 					sigma[m] = fv / rho + (1 - fv) / p.rhoOx;
+					if (hop) sigma[m] += sHop * this.hopW![jo * g.nr + i];
 				}
 			}
 			el = assemble(gf, sigma);
@@ -314,9 +373,20 @@ export class FieldSolver {
 			} else {
 				for (let m = 0; m < n; m++) T[m] += relax * (tNew[m] - T[m]);
 			}
-			if (dT < tol) break;
+			let dvg = 0;
+			if (hop) {
+				// 갭 양옆 CF 끝(축 위 칸) 사이 전위차. 강한 비선형이라 로그 공간에서 반씩 섞는다
+				const loV = jl >= 0 ? V[jl * nr] : 0;
+				const hiV = jh < nz ? V[jh * nr] : va;
+				const vgNew = Math.max(Math.abs(hiV - loV), 1e-9);
+				const vgNext = Math.exp(0.5 * (Math.log(Math.max(vg, 1e-9)) + Math.log(vgNew)));
+				dvg = Math.abs(vgNext - vg);
+				vg = vgNext;
+			}
+			if (dT < tol && dvg < 1e-4 * Math.max(va, 1e-3)) break;
 		}
 		this.tLast = T;
+		if (hop) this.vgLast = vg;
 		let I = 0;
 		let P = 0;
 		for (let i = 0; i < nr; i++) I += el!.gTop[i] * (va - V[(nz - 1) * nr + i]);

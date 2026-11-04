@@ -3,8 +3,8 @@
 
 import { DEFAULT_GRID, EV, type GridSpec, type Params } from "./params";
 import {
-	fitEa, fitLrs, fitNeck, geomspace, lowFieldResistance, modelLrsCurve, oxideResistivity, resetFeatures, russoExtraction,
-	setFeatures, uniformCf, type LrsCurve,
+	fitEa, fitGap, fitKappaEl, fitLrs, fitNeck, gapProfile, geomspace, lowFieldResistance, modelLrsCurve, modelVSet, oxideResistivity, resetFeatures,
+	russoExtraction, setFeatures, uniformCf, type LrsCurve,
 } from "./inverse";
 import { rampWaveform, readResistance, simulate, type SimResult } from "./simulate";
 import type { SweepKind } from "./measurement";
@@ -68,6 +68,9 @@ export interface MeasureOutput {
 	sens: SensRow[];	// R_L마다
 	main: number;	// sens에서 기준 R_L의 위치
 	curve: LrsCurve;	// 모델 Rth/R0 대 지름 (필라멘트 1개)
+	kappaEl: number;	// 열 보정 (A56): 측정 Rth에 맞춘 전극 열전도도 [W/(K·m)] (NaN이면 못 맞춤)
+	phiK: number;	// 그때의 필라멘트 지름 [m]
+	gap: number;	// HRS 중앙값으로 본 끊긴 갭 길이 [m] (호핑 전도가 켜져 있을 때, A55)
 	rNeck: number;	// HRS 중앙값으로 본 잘록 반경 [m] (NaN이면 연속체 모델 범위 밖)
 	neckLen: number;	// [m]
 	vResetMed: number;
@@ -118,18 +121,31 @@ export function runMeasure(job: MeasureJob, onProgress?: (done: number, total: n
 		};
 	});
 	const main = rls.indexOf(p.RL);
-	const m = sens[main];
+	const m0 = sens[main];
+	// 열 보정: 기준 R_L에서 필라멘트 개수(나눌 수 없으면 1개)로 κ_el을 측정 Rth에 맞춘다. 갭 역산도 이 값으로
+	let kappaEl = NaN;
+	let phiK = NaN;
+	if (m0.R0 > 0 && m0.rth > 0 && p.tEl > 0) {
+		const k = fitKappaEl(m0.R0, m0.rth, p, Number.isFinite(tMain) && tMain > p.T0 + 20 ? tMain : 600, job.alpha, gs, m0.separable ? Math.max(1, m0.N) : 1);
+		kappaEl = k.kappaEl;
+		phiK = k.phi;
+		if (Number.isFinite(kappaEl)) p = { ...p, kappaEl };
+	}
+	onProgress?.(0.9, 1);
 	const rHrsMed = median(sets.map((s) => s.rHrs));
 	let rNeck = NaN;
 	let neckLen = NaN;
-	if (Number.isFinite(m.phi) && Number.isFinite(rHrsMed)) {
-		const nk = fitNeck(rHrsMed, m.phi, Math.max(1, m.N), p, gs);
+	let gap = NaN;
+	const phiUse = Number.isFinite(phiK) ? phiK : m0.phi;
+	if (Number.isFinite(phiUse) && Number.isFinite(rHrsMed)) {
+		const nk = fitNeck(rHrsMed, phiUse, Math.max(1, m0.N), p, gs);
 		rNeck = nk.rNeck;
 		neckLen = nk.neckLen;
+		if (p.hop) gap = fitGap(rHrsMed, phiUse, Math.max(1, m0.N), p, gs);
 	}
 	onProgress?.(1, 1);
 	return {
-		kind: "measure", rPristine, rhoOx, resets, sets, sens, main, curve, rNeck, neckLen,
+		kind: "measure", rPristine, rhoOx, resets, sets, sens, main, curve, kappaEl, phiK, gap, rNeck, neckLen,
 		vResetMed: median(resets.map((r) => r.vReset)), iResetMed: median(resets.map((r) => r.iReset)),
 		vSetMed: median(sets.map((s) => s.vSet)), rHrsMed,
 	};
@@ -145,6 +161,7 @@ export interface MeasureSimJob {
 	includeCp: boolean;	// 패드 정전용량 (A51)
 	fitEa: boolean;	// 측정 V_set에 E_a를 먼저 맞춤 (A54)
 	vSetTarget: number;	// [V]
+	hrsGap: number;	// > 0이면 SET을 이 길이의 끊긴 갭(측정 HRS에 맞춘 형상)에서 시작 [m]. 아니면 시뮬레이션 RESET 끝 상태
 	grid?: GridSpec;
 }
 
@@ -154,6 +171,8 @@ export interface MeasureSimOutput {
 	set: SimResult;
 	eaEV: number;	// 쓴 E_a [eV]
 	fitted: boolean;	// E_a를 맞췄는지 (실패하면 false, 입력값 그대로)
+	vNoGrowth: number;	// 성장 없이(E_a 3 eV) 호핑·누설 전류만으로 CC에 닿는 전압 [V] (E_a 맞추기 실패 원인 진단)
+	setFromHrs: boolean;	// SET을 측정 HRS 형상에서 시작했는지
 	rHrs: number;	// RESET 뒤 읽기 저항 [ohm]
 	rLrs: number;	// SET 뒤 읽기 저항 [ohm]
 }
@@ -162,21 +181,26 @@ export function runMeasureSim(job: MeasureSimJob, onProgress?: (done: number, to
 	const gs = job.grid ?? DEFAULT_GRID;
 	let p = job.params;
 	const reset = simulate(rampWaveform("reset", job.vResetMax, job.rate), uniformCf(p.phi0, p, gs), p, { grid: gs, onProgress: (f) => onProgress?.(0.2 * f, 1) });
+	const setFromHrs = job.hrsGap > 0;
+	const rb0 = setFromHrs ? gapProfile(p.phi0, job.hrsGap, p, gs) : reset.rbEnd;
 	let fitted = false;
+	let vNoGrowth = NaN;
 	if (job.fitEa && Number.isFinite(job.vSetTarget)) {
 		let n = 0;
-		const ea = fitEa(job.vSetTarget, reset.rbEnd, p, job.rate, job.icc, gs, 0.4, 3.0, () => onProgress?.(0.2 + 0.6 * Math.min(1, ++n / 12), 1));
+		const ea = fitEa(job.vSetTarget, rb0, p, job.rate, job.icc, gs, 0.4, 3.0, () => onProgress?.(0.2 + 0.6 * Math.min(1, ++n / 12), 1));
 		if (Number.isFinite(ea)) {
 			p = { ...p, Ea: ea };
 			fitted = true;
+		} else {
+			vNoGrowth = modelVSet(rb0, { ...p, Ea: 3.0 * EV }, job.rate, 1.5 * job.vSetTarget + 0.5, job.icc, gs).vSet;
 		}
 	}
-	const set = simulate(rampWaveform("set", job.vSetMax, job.rate), reset.rbEnd, p, {
+	const set = simulate(rampWaveform("set", job.vSetMax, job.rate), rb0, p, {
 		iCc: job.icc, ccHold: 0.1 / job.rate, includeCp: job.includeCp, dvcMax: job.includeCp ? 0.05 : undefined, grid: gs,
 		onProgress: (f) => onProgress?.(0.8 + 0.2 * f, 1),
 	});
 	return {
-		kind: "measureSim", reset, set, eaEV: p.Ea / EV, fitted,
+		kind: "measureSim", reset, set, eaEV: p.Ea / EV, fitted, vNoGrowth, setFromHrs,
 		rHrs: readResistance(reset.rbEnd, p, 0.1, gs), rLrs: readResistance(set.rbEnd, p, 0.1, gs),
 	};
 }

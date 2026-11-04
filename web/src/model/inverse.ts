@@ -122,12 +122,35 @@ export function uniformCf(phi: number, p: Params, gs: GridSpec = DEFAULT_GRID): 
 	return new Float64Array(makeGrid(p, gs).nz).fill(phi / 2);
 }
 
-// 지름 phi CF의 가운데 길이 gap 구간을 반경 rNeck(기본 0 = 끊긴 갭)으로 ([R] Fig. 2·6)
+// 지름 phi CF의 가운데 길이 gap 구간을 반경 rNeck(기본 0 = 끊긴 갭)으로 ([R] Fig. 2·6).
+// 끊긴 갭은 끝이 걸친 칸을 반경 Δr·(1 − 걸친 비율)로 두어 호핑 갭 길이(A55)가 gap에 대해 연속이 되게 한다
 export function gapProfile(phi: number, gap: number, p: Params, gs: GridSpec = DEFAULT_GRID, rNeck = 0): Float64Array {
 	const g = makeGrid(p, gs);
 	const rb = new Float64Array(g.nz).fill(phi / 2);
-	for (let j = 0; j < g.nz; j++) if (Math.abs(g.zc[j] - p.L0 / 2) <= gap / 2) rb[j] = rNeck;
+	if (rNeck > 0) {
+		for (let j = 0; j < g.nz; j++) if (Math.abs(g.zc[j] - p.L0 / 2) <= gap / 2) rb[j] = rNeck;
+		return rb;
+	}
+	const lo = p.L0 / 2 - gap / 2;
+	const hi = p.L0 / 2 + gap / 2;
+	for (let j = 0; j < g.nz; j++) {
+		const z0 = g.zFaces[j];
+		const z1 = g.zFaces[j + 1];
+		const fr = Math.min(Math.max((Math.min(z1, hi) - Math.max(z0, lo)) / (z1 - z0), 0), 1);
+		if (fr > 0) rb[j] = p.dr * (1 - fr);
+	}
 	return rb;
+}
+
+// HRS 저항으로 끊긴 갭 길이 [m] (호핑 전도가 켜져 있을 때, A55). 범위 밖이면 NaN
+export function fitGap(rHrs: number, phi: number, N: number, p: Params, gs: GridSpec = DEFAULT_GRID): number {
+	const g = makeGrid(p, gs);
+	const dz = p.L0 / g.nz;
+	const rOf = (gap: number): number => deviceResistance(gapProfile(phi, gap, p, gs), N, p, gs);
+	const lo = 0.5 * dz;
+	const hi = p.L0 - 2 * dz;
+	if (!(rOf(lo) <= rHrs && rHrs <= rOf(hi))) return NaN;
+	return brent((x) => Math.log(rOf(x) / rHrs), lo, hi, 0.01e-9);
 }
 
 // 필라멘트 1개 정적 I-V (R_L 없음)
@@ -234,6 +257,26 @@ export function fitLrs(R0: number, Rth: number, p: Params, tTarget: number, alph
 	const inRange = R0 >= Math.min(...c.R0) && R0 <= Math.max(...c.R0);
 	const phi1 = inRange ? Math.exp(interp(-Math.log(R0), rev.map((k) => nx[k]), rev.map((k) => lphi[k]))) : NaN;
 	return { phi: phi1, N: 1, phiLo: NaN, phiHi: NaN, separable: false, curve: c };
+}
+
+// 열 보정 (A56): 필라멘트 N개로 보고 측정 R0, Rth에 맞는 전극 열전도도 κ_el [W/(K·m)]과 지름 [m].
+// 지름은 R0에서 정하고(저전계 저항은 κ_el과 무관), 그 지름에서 모델 Rth가 측정과 같아지도록 κ_el을 찾는다.
+// 범위 [lo, hi] 안에 없으면 kappaEl = NaN
+export function fitKappaEl(R0: number, Rth: number, p: Params, tTarget: number, alpha = p.alphaT, gs: GridSpec = DEFAULT_GRID, N = 1, lo = 2, hi = 1000): { kappaEl: number; phi: number } {
+	const c = modelLrsCurve(p, geomspace(3e-9, 1.9 * p.Rdom, 24), tTarget, alpha, gs);
+	const rFil = R0 * N;
+	if (!(rFil >= Math.min(...c.R0) && rFil <= Math.max(...c.R0))) return { kappaEl: NaN, phi: NaN };
+	const nx = c.R0.map((x) => -Math.log(x));
+	const ord = nx.map((_, k) => k).sort((a, b) => nx[a] - nx[b]);
+	const phi = Math.exp(interp(-Math.log(rFil), ord.map((k) => nx[k]), ord.map((k) => Math.log(c.phi[k]))));
+	const resid = (lk: number): number => {
+		const cc = modelLrsCurve({ ...p, kappaEl: Math.exp(lk) }, [phi], tTarget, alpha, gs);
+		return Math.log(cc.Rth[0] / N / Rth);
+	};
+	const a = resid(Math.log(lo));
+	const b = resid(Math.log(hi));
+	if (a * b > 0) return { kappaEl: NaN, phi };
+	return { kappaEl: Math.exp(brent(resid, Math.log(lo), Math.log(hi), 1e-3)), phi };
 }
 
 // 필라멘트 N개(동일) 병렬 + 셀 산화막 누설의 저전계 저항 (R_L 뺀 값) [ohm]

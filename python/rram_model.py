@@ -58,6 +58,11 @@ class Params:
 	dr: float = 0.25e-9	# 측면 성장 단위 Delta_r [m] (A4)
 	Z: float = 1.0	# 전하수 [-]
 	set_field: int = 0	# SET 성장식의 전계: 0 = 경계 국소 전계 (A33), 1 = 산화막 평균 전계 V_ox/L0 (A54)
+	# 갭 호핑 전도 (A55): [D] 식 (6) I_hop = I0 * (pi w^2/4) * exp(-g/gT) * sinh(V_gap/VT), 값은 [M] Table 3
+	hop: int = 0	# 0 = 끔, 1 = 끊긴 구간(갭)에 호핑 전도를 더함
+	I0: float = 1e13	# 호핑 전류 밀도 [A/m^2], [M] Table 3
+	VT: float = 0.4	# 특성 전압 [V], [M] Table 3
+	gT: float = 0.25e-9	# 호핑 감쇠 길이 [m]. [D]·[M]에 값 없음, 이전 bipolar 단계의 피팅값 (A3, A55)
 	# 기생 성분: [M] Table 3
 	RL: float = 20.0	# 전극 접촉 저항 [ohm]
 	CP: float = 20e-15	# 전극 기생 정전용량 [F]
@@ -105,6 +110,7 @@ OUR_DEVICE = {
 	"CP": 8.8541878128e-12 * 20 * 20800e-12 / 6e-9,	# [F]
 	"RL": 30.0,	# [ohm], 추정
 	"set_field": 1,	# 평균 전계 (A54)
+	"hop": 1,	# 갭 호핑 전도 (A55)
 	"Ea": 1.661 * EV,	# [J], 실측 V_set 2.7 V (CC 10 uA, 1 V/s 가정)에 맞춘 값. Table 3 범위 [0.5, 1.2] eV 밖 (A54)
 }
 
@@ -263,6 +269,41 @@ class FieldSolver:
 		A, self.Gt_th, self.Gb_th, _, _ = _assemble(self.gf, kappa)
 		self.lu_th = spla.splu(A)
 		self.T_last = None
+		self._setup_hop(g, p, rb)
+
+	def _setup_hop(self, g, p, rb):
+		"""갭 호핑 전도 준비 (A55). 반경이 Delta_r(= VO 간격 a)보다 작은 행을 갭으로 보고
+		무게 w_j = 1 - r_b/Delta_r (0..1)로 갭 길이 g = sum w_j dz_j 를 잡는다 (경계가 움직일 때 매끄럽게).
+		호핑 단면은 갭 양옆 CF 끝 반경 중 작은 쪽 r_s 안의 셀 ([D] 식 (6)의 pi w^2/4, w = 2 r_s)."""
+		self.g_hop = 0.0
+		self.vg_last = None
+		if not p.hop:
+			return
+		dz = np.diff(g.z_faces)
+		w = np.clip(1.0 - np.asarray(rb) / p.dr, 0.0, 1.0)
+		gap_rows = np.where(w > 0)[0]
+		if gap_rows.size == 0 or gap_rows.size == len(rb):
+			return
+		j0, j1 = gap_rows[0], gap_rows[-1]
+		ends = [rb[j] for j in (j0 - 1, j1 + 1) if 0 <= j < len(rb)]
+		r_s = float(min(ends))
+		if r_s <= 0:
+			return
+		r0 = g.r_faces[:-1]
+		r1 = g.r_faces[1:]
+		frac = np.clip((r_s ** 2 - r0 ** 2) / (r1 ** 2 - r0 ** 2), 0.0, 1.0)
+		self.g_hop = float(np.sum(w * dz))
+		self.a_hop = math.pi * r_s ** 2
+		self.r_s = r_s
+		# 행 j의 호핑 전도도 = sigma_hop / w_j (행 저항 w_j dz_j / (sigma_hop A), 합 = g / (sigma_hop A))
+		self.hop_w = np.where(w > 0, 1.0 / np.maximum(w, 1e-12), 0.0)[:, None] * frac[None, :]
+		self.hop_j = (j0, j1)
+
+	def gap_conductance(self, vg):
+		"""갭 호핑 컨덕턴스 I_hop/V_gap [S] ([D] 식 (6))."""
+		p = self.p
+		x = max(abs(vg), 1e-9)
+		return p.I0 * self.a_hop * math.exp(-self.g_hop / p.gT) * math.sinh(x / p.VT) / x
 
 	def solve(self, v, tol=0.05, max_iter=80, relax=0.7):
 		"""셀 양단 전압 v [V]에서 V, T를 Picard 반복으로 푼다 ([R] 식 (1)-(4)). 부호 대칭.
@@ -276,9 +317,17 @@ class FieldSolver:
 		T = self.T_last.copy() if self.T_last is not None else np.full((nz, nr), p.T0)
 		sigma = np.full((nz, nr), 1.0 / p.rho_el)
 		sigma[self.off] = OFF / p.rho_ox
+		hop = self.g_hop > 0
+		if hop:
+			# V_gap 초기값: 지난 풀이 값, 없으면 인가 전압 전부
+			vg = self.vg_last if self.vg_last is not None else va
+			jl, jh = self.hop_j[0] - 1 + self.nb, self.hop_j[1] + 1 + self.nb
 		for it in range(max_iter):
 			rho = p.rho_cf * (1 + p.alpha_T * (T[self.ox] - p.T0))
 			sigma[self.ox] = f / rho + (1 - f) / p.rho_ox
+			if hop:
+				s_hop = self.gap_conductance(vg) * self.g_hop / self.a_hop
+				sigma[self.ox] += s_hop * self.hop_w
 			A_e, Gt_e, Gb_e, Gr_e, Gz_e = _assemble(g, sigma)
 			b = np.zeros(nz * nr)
 			b[(nz - 1) * nr:] = Gt_e * va
@@ -299,9 +348,20 @@ class FieldSolver:
 			T_new = self.lu_th.solve(bt.ravel()).reshape(nz, nr)
 			dT = float(np.max(np.abs(T_new - T)))
 			T = T_new if it == 0 else T + relax * (T_new - T)
-			if dT < tol:
+			dvg = 0.0
+			if hop:
+				# 갭 양옆 CF 끝(축 위 칸) 사이 전위차. 강한 비선형이라 로그 공간에서 반씩 섞는다
+				lo_v = V[jl, 0] if jl >= 0 else 0.0
+				hi_v = V[jh, 0] if jh < nz else va
+				vg_new = max(abs(hi_v - lo_v), 1e-9)
+				vg_next = math.exp(0.5 * (math.log(max(vg, 1e-9)) + math.log(vg_new)))
+				dvg = abs(vg_next - vg)
+				vg = vg_next
+			if dT < tol and dvg < 1e-4 * max(va, 1e-3):
 				break
 		self.T_last = T
+		if hop:
+			self.vg_last = vg
 		I = float(np.sum(Gt_e * (va - V[-1, :])))
 		return Fields(s * V[self.ox], T[self.ox], s * I, float(q.sum()))
 

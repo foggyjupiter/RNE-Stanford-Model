@@ -181,10 +181,19 @@ def gap_profile(phi, gap, p, gs=rm.DEFAULT_GRID, r_neck=0.0):
 	"""지름 phi CF의 가운데 길이 gap 구간을 반경 r_neck(기본 0 = 완전히 끊긴 갭)으로 둔 형상.
 
 	[R] Fig. 2·6: 열 용해는 가운데(최고 온도)에서 시작한다. 갭 안은 산화막.
+	끊긴 갭(r_neck = 0)은 갭 끝이 걸친 칸을 반경 Delta_r*(1 - 걸친 비율)로 두어, 호핑의 갭 길이
+	(A55의 w_j = 1 - r_b/Delta_r)가 gap에 대해 연속이 되게 한다.
 	"""
 	g = rm.make_grid(p, gs)
 	rb = np.full(len(g.zc), phi / 2)
-	rb[np.abs(g.zc - p.L0 / 2) <= gap / 2] = r_neck
+	if r_neck > 0:
+		rb[np.abs(g.zc - p.L0 / 2) <= gap / 2] = r_neck
+		return rb
+	lo, hi = p.L0 / 2 - gap / 2, p.L0 / 2 + gap / 2
+	z0, z1 = g.z_faces[:-1], g.z_faces[1:]
+	frac = np.clip((np.minimum(z1, hi) - np.maximum(z0, lo)) / (z1 - z0), 0.0, 1.0)
+	part = frac > 0
+	rb[part] = p.dr * (1.0 - frac[part])
 	return rb
 
 
@@ -273,6 +282,31 @@ def fit_lrs(R0, Rth, p, T_target, alpha=None, gs=rm.DEFAULT_GRID, rel=0.2, phis=
 	return LrsFit(phi, N, lo, hi, c)
 
 
+def fit_kappa_el(R0, Rth, p, T_target, alpha=None, gs=rm.DEFAULT_GRID, N=1.0, lo=2.0, hi=1000.0):
+	"""열 보정 (A56): 필라멘트 N개로 보고 측정 R0, Rth에 맞는 전극 열전도도 kappa_el [W/(K m)]과 지름 [m].
+
+	지름은 R0에서 정한다 (저전계 저항은 kappa_el과 무관). 그 지름에서 모델 Rth(같은 [C] 식 (5) 추출)가
+	측정 Rth와 같아지도록 kappa_el을 찾는다. 6 nm 소자에서 Rth는 거의 전극으로 퍼지는 단계에서 정해진다.
+	반환: (kappa_el, phi). 범위 [lo, hi] 안에 없으면 kappa_el = nan.
+	"""
+	alpha = p.alpha_T if alpha is None else alpha
+	phis = np.geomspace(3e-9, 1.9 * p.R_dom, 24)
+	c = model_lrs_curve(p, phis, T_target, alpha, gs)
+	R_fil = R0 * N
+	if not (c["R0"].min() <= R_fil <= c["R0"].max()):
+		return float("nan"), float("nan")
+	phi = float(np.exp(np.interp(-math.log(R_fil), -np.log(c["R0"]), np.log(c["phi"]))))
+
+	def resid(lk):
+		cc = model_lrs_curve(replace(p, kappa_el=math.exp(lk)), [phi], T_target, alpha, gs)
+		return math.log(cc["Rth"][0] / N / Rth)
+
+	a, b = resid(math.log(lo)), resid(math.log(hi))
+	if a * b > 0:
+		return float("nan"), phi
+	return math.exp(brentq(resid, math.log(lo), math.log(hi), xtol=1e-3)), phi
+
+
 def device_resistance(rb, N, p, gs=rm.DEFAULT_GRID, v_read=0.1):
 	"""필라멘트 N개(동일) 병렬 + 셀 산화막 누설의 저전계 저항 (R_L 뺀 값) [ohm]."""
 	I, _ = filament_static(rb, p, [v_read], gs)
@@ -305,9 +339,9 @@ def fit_gap(R_hrs, phi, N, p, gs=rm.DEFAULT_GRID, neck_len=None):
 		return device_resistance(gap_profile(phi, neck_len, p, gs, rn), N, p, gs)
 
 	gap = float("nan")
-	lo, hi = dz, p.L0
+	lo, hi = 0.5 * dz, p.L0 - 2 * dz	# 갭 끝 칸이 연속이라(gap_profile) 칸보다 짧은 갭도 풀린다
 	if r_of_gap(lo) <= R_hrs <= r_of_gap(hi):
-		gap = brentq(lambda x: math.log(r_of_gap(x) / R_hrs), lo, hi, xtol=0.05 * dz)
+		gap = brentq(lambda x: math.log(r_of_gap(x) / R_hrs), lo, hi, xtol=0.01e-9)
 	rn = float("nan")
 	lo, hi = 0.2 * p.dr, phi / 2
 	if r_of_neck(hi) <= R_hrs <= r_of_neck(lo):

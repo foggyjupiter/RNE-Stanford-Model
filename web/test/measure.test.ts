@@ -3,12 +3,14 @@
 // 허용 오차 (상대오차):
 // - 엑셀 읽기·분류·특징값(저전계 저항, RESET 점, [C] 식 (5)-(6)): 1e-12. 같은 산술을 같은 순서로 한다.
 // - 모델 곡선과 지름 맞춤: 1e-8. 정상 상태 풀이(대역 Cholesky 대 LU)의 차이 (model.test.ts와 같은 근거).
+// - 열 보정 κ_el (A56): 상대 2e-3. 두 구현 모두 ln κ에서 근 찾기 허용오차 1e-3 (Brent 구현이 달라 그만큼 어긋날 수 있음).
+// - 호핑 갭 (A55): 절대 0.02 nm. 근 찾기 허용오차 0.01 nm의 두 배.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { goldenPath } from "./golden";
 import {
-	DEFAULT, OUR_DEVICE, firstForming, fitLrs, lowFieldResistance, modelLrsCurve, oxideResistivity, parseSession, readXlsx, resetFeatures,
+	DEFAULT, OUR_DEVICE, firstForming, fitGap, fitKappaEl, fitLrs, lowFieldResistance, modelLrsCurve, oxideResistivity, parseSession, readXlsx, resetFeatures,
 	russoExtraction, setFeatures, type Params, type Session,
 } from "../src/model";
 
@@ -75,4 +77,19 @@ describe("측정 데이터: 모델 곡선과 지름 맞춤", () => {
 		expect(rel(f.phi, G.fit_lrs.phi)).toBeLessThan(1e-8);
 		expect(rel(f.N, G.fit_lrs.N)).toBeLessThan(1e-8);
 	});
+});
+
+describe("측정 데이터: 열 보정과 호핑 갭", () => {
+	test("fitKappaEl (A56)", () => {
+		const g = G.fit_kappa_el;
+		const k = fitKappaEl(g.R0, g.Rth, P, g.T_target, 1.7e-3);
+		expect(rel(k.phi, g.phi)).toBeLessThan(1e-8);
+		expect(rel(k.kappaEl, g.kappa_el)).toBeLessThan(2e-3);
+	}, 120000);
+
+	test("fitGap (A55)", () => {
+		const g = G.fit_gap;
+		const gap = fitGap(g.R_hrs, g.phi, 1, { ...P, kappaEl: g.kappa_el, rhoOx: g.rho_ox });
+		expect(Math.abs(gap - g.gap)).toBeLessThan(0.02e-9);
+	}, 120000);
 });

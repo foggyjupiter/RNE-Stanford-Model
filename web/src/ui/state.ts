@@ -69,9 +69,11 @@ export interface MeasureSettings {
 	icc: number;	// 시뮬레이션 SET 전류 제한 [A] (NaN이면 측정 SET의 중앙값)
 	includeCp: boolean;	// 시뮬레이션에 패드 정전용량 (A51)
 	fitEa: boolean;	// 시뮬레이션 전에 E_a를 측정 V_set에 맞춤 (A54)
+	thermalFit: boolean;	// 시뮬레이션에 열 보정한 κ_el을 씀 (A56)
+	setFromHrs: boolean;	// SET을 측정 HRS에 맞춘 갭 형상에서 시작 (A55)
 }
 
-export const DEFAULT_MEASURE: MeasureSettings = { thickness: NaN, rate: 1.0, alpha: 1.7e-3, icc: NaN, includeCp: true, fitEa: true };
+export const DEFAULT_MEASURE: MeasureSettings = { thickness: NaN, rate: 1.0, alpha: 1.7e-3, icc: NaN, includeCp: true, fitEa: true, thermalFit: true, setFromHrs: false };
 
 export interface AppState {
 	mode: Mode;

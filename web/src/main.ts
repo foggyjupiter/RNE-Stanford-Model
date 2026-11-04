@@ -382,6 +382,17 @@ function buildParams(): void {
 		sum.append(el("span", "group-title", g.title));
 		if (g.hint) sum.append(el("span", "group-hint", g.hint));
 		d.append(sum);
+		// 0/1 스위치 파라미터: 갭 호핑 켜기 (A55), SET 전계 방식 (A54)
+		const toggles: [string, keyof Params, string][] = [["hop", "hop", "갭 호핑 전도 켜기"], ["set", "setField", "SET 전계: 산화막 평균 전계 V/L0 (끄면 경계 국소 전계)"]];
+		for (const [gid, key, label] of toggles) {
+			if (g.id !== gid) continue;
+			const sw = makeSwitch(label, () => state.params[key] === 1, (on) => {
+				state.params = { ...state.params, [key]: on ? 1 : 0 };
+				schedule(0);
+			});
+			paramFields.push(sw);
+			d.append(sw.el);
+		}
 		const fields = g.items.map((m) => {
 			const f = paramField(m);
 			paramFields.push(f);
@@ -918,6 +929,8 @@ function measurePanel(s: HTMLElement, add: (f: Field) => void): void {
 	waveFields.push(icc);
 	box.append(icc.el);
 	box.append(makeSwitch("패드 정전용량 C_P 포함 (A51)", () => w.includeCp, (on) => (w.includeCp = on)).el);
+	box.append(makeSwitch("열 보정한 전극 열전도도 쓰기 (A56)", () => w.thermalFit, (on) => (w.thermalFit = on)).el);
+	box.append(makeSwitch("SET을 측정 HRS에 맞춘 갭에서 시작 (A55)", () => w.setFromHrs, (on) => (w.setFromHrs = on)).el);
 	box.append(makeSwitch("E_a를 측정 V_set에 먼저 맞추기 (A54)", () => w.fitEa, (on) => (w.fitEa = on)).el);
 	const run = el("button", "btn", "시뮬레이션 실행");
 	run.type = "button";
@@ -946,13 +959,18 @@ async function runMeasureSim(): Promise<void> {
 	}
 	const p0 = measureParams();
 	const n = m.separable ? Math.max(1, Math.round(m.N)) : 1;
-	const params: Params = { ...p0, phi0: m.phi, nF: n / p0.aCell, rhoOx: Number.isFinite(out.rhoOx) ? out.rhoOx : p0.rhoOx };
+	const thermal = state.measure.thermalFit && Number.isFinite(out.kappaEl);
+	const params: Params = {
+		...p0, phi0: thermal ? out.phiK : m.phi, nF: n / p0.aCell, rhoOx: Number.isFinite(out.rhoOx) ? out.rhoOx : p0.rhoOx,
+		kappaEl: thermal ? out.kappaEl : p0.kappaEl,
+	};
 	const job: MeasureSimJob = {
 		kind: "measureSim", params, rate: state.measure.rate,
 		vResetMax: (Number.isFinite(out.vResetMed) ? out.vResetMed : 1.5) + 0.5,
 		vSetMax: (Number.isFinite(out.vSetMed) ? out.vSetMed : 3) + 1.0,
 		icc: Number.isFinite(state.measure.icc) ? state.measure.icc : medianCc(),
 		includeCp: state.measure.includeCp, fitEa: state.measure.fitEa, vSetTarget: out.vSetMed,
+		hrsGap: state.measure.setFromHrs && Number.isFinite(out.gap) ? out.gap : 0,
 	};
 	const t0 = performance.now();
 	setStatus("시뮬레이션 중…", true, 0);
@@ -1109,7 +1127,11 @@ function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
 		stat("R_LRS", siFormat(m.R0, "Ω"), `R_L ${state.params.RL} Ω 뺀 값`),
 		stat("T_crit", `${m.tCrit.toFixed(0)} K`, `Rth ${m.rth.toExponential(2)} K/W`),
 		stat("V_SET", `${out.vSetMed.toFixed(2)} V`, "중앙값, HRS에서 시작한 SET"),
-		stat("R_HRS", siFormat(out.rHrsMed, "Ω"), Number.isFinite(out.rNeck) ? `잘록 반경 ${(out.rNeck * 1e9).toFixed(2)} nm` : "연속체 모델로 설명 안 됨 (원자 크기 이하)"),
+		stat("R_HRS", siFormat(out.rHrsMed, "Ω"), Number.isFinite(out.rNeck) ? `잘록 반경 ${(out.rNeck * 1e9).toFixed(2)} nm` : "금속 잘록 구간으로는 설명 안 됨"),
+		stat("열 보정 κ_el", Number.isFinite(out.kappaEl) ? `${out.kappaEl.toFixed(0)} W/(K·m)` : "—",
+			Number.isFinite(out.kappaEl) ? `측정 Rth에 맞춤${out.kappaEl > 27 || out.kappaEl < 7 ? " · TiN 문헌 7–27 밖 [8], [10]" : ""} (A56)` : "전극층이 없거나 맞출 수 없음"),
+		stat("갭 (HRS)", Number.isFinite(out.gap) ? `${(out.gap * 1e9).toFixed(1)} nm` : "—",
+			state.params.hop ? `호핑 [D] 식 (6), g_T ${(state.params.gT * 1e9).toFixed(2)} nm 가정, 굵은 필라멘트 끝 기준 (A55)` : "호핑 전도를 켜야 계산 (A55)"),
 		stat("필라멘트", Number.isFinite(m.phi) ? `${(m.phi * 1e9).toFixed(0)} nm` : "—", m.separable ? `${m.N.toFixed(1)}개` : "1개로 가정 (개수 분리 불가)"),
 	);
 	if (sim) {
@@ -1120,7 +1142,8 @@ function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
 		for (let q = 1; q < sim.reset.i.length; q++) if (Math.abs(sim.reset.i[q]) > Math.abs(sim.reset.i[kr])) kr = q;
 		stats.append(
 			stat("시뮬 V_RESET", `${sim.reset.vApp[kr].toFixed(2)} V`, `측정 ${out.vResetMed.toFixed(2)} V · I ${siFormat(Math.abs(sim.reset.i[kr]), "A")}`),
-			stat("시뮬 E_a", `${sim.eaEV.toFixed(3)} eV`, `${sim.fitted ? "V_set에 맞춤" : "입력값"}${out1 ? " · Table 3 범위 밖" : ""}`),
+			stat("시뮬 E_a", `${sim.eaEV.toFixed(3)} eV`, sim.fitted ? `V_set에 맞춤${out1 ? " · Table 3 범위 밖" : ""}`
+				: Number.isFinite(sim.vNoGrowth) ? `맞추기 실패: 성장 없이도 ${sim.vNoGrowth.toFixed(2)} V에서 CC 도달 (측정 ${out.vSetMed.toFixed(2)} V)` : `입력값${out1 ? " · Table 3 범위 밖" : ""}`),
 			stat("시뮬 HRS / LRS", `${siFormat(sim.rHrs, "Ω")} / ${siFormat(sim.rLrs, "Ω")}`, "0.1 V 읽기 (R_L 포함)"),
 			stat("SET 순간 필라멘트 전류", siFormat(imax, "A"), state.measure.includeCp ? "C_P 방전 포함" : "C_P 없음"),
 		);
