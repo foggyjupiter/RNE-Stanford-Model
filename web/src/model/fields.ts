@@ -390,7 +390,23 @@ export class FieldSolver {
 		if (hop) this.vgLast = vg;
 		let I = 0;
 		let P = 0;
-		for (let i = 0; i < nr; i++) I += el!.gTop[i] * (va - V[(nz - 1) * nr + i]);
+		// 전류 = 어느 z 면을 지나는 흐름의 합 (모든 면에서 같다). 전위차가 가장 큰 면에서 계산해 자릿수 손실을 줄인다
+		// (HRS에서는 전압이 거의 갭에 걸려 전극 면의 전위차가 아주 작다)
+		let best = -1;
+		let bestDrop = -1;
+		const drop = (k: number, i: number): number => (k === 0 ? V[i] : k === nz ? va - V[(nz - 1) * nr + i] : V[k * nr + i] - V[(k - 1) * nr + i]);
+		for (let k = 0; k <= nz; k++) {
+			let mx = 0;
+			for (let i = 0; i < nr; i++) mx = Math.max(mx, Math.abs(drop(k, i)));
+			if (mx > bestDrop) {
+				bestDrop = mx;
+				best = k;
+			}
+		}
+		for (let i = 0; i < nr; i++) {
+			const c = best === 0 ? el!.gBot[i] : best === nz ? el!.gTop[i] : el!.gz[(best - 1) * nr + i];
+			I += c * drop(best, i);
+		}
 		for (let m = 0; m < n; m++) P += q[m];
 		// 산화막 부분만 잘라 돌려준다
 		const no = g.nz * g.nr;

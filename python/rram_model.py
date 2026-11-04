@@ -249,6 +249,17 @@ class Fields:
 OFF = 1e-9	# 계산에서 빼는 셀의 전도도 배율 [-] (A41)
 
 
+def _face_current(Gb, Gz, Gt, V, va):
+	"""전류 = 어느 z 면을 지나는 흐름의 합 (모든 면에서 같다). 전위차가 가장 큰 면에서 계산해 자릿수 손실을 줄인다.
+
+	HRS에서는 전압이 거의 갭에 걸려 전극 면의 전위차가 아주 작으므로, 그 면에서 재면 선형 풀이의 반올림이 커진다.
+	"""
+	drops = [V[0, :]] + [V[j + 1, :] - V[j, :] for j in range(V.shape[0] - 1)] + [va - V[-1, :]]
+	conds = [Gb] + [Gz[j, :] for j in range(Gz.shape[0])] + [Gt]
+	k = max(range(len(drops)), key=lambda j: float(np.max(np.abs(drops[j]))))
+	return float(np.sum(conds[k] * drops[k]))
+
+
 class FieldSolver:
 	"""한 CF 형상(rb)에 대해 정상 상태 전위·온도를 푸는 도우미. 열 행렬 분해를 재사용한다."""
 
@@ -363,7 +374,7 @@ class FieldSolver:
 		self.T_last = T
 		if hop:
 			self.vg_last = vg
-		I = float(np.sum(Gt_e * (va - V[-1, :])))
+		I = _face_current(Gb_e, Gz_e, Gt_e, V, va)
 		return Fields(s * V[self.ox], T[self.ox], s * I, float(q.sum()))
 
 
