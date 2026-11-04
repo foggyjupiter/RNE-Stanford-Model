@@ -3,7 +3,7 @@
 import "./styles.css";
 import {
 	DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, KIND_LABELS, OUR_DEVICE, concatResults, filamentCount, median as medianOf, parseSession, readXlsx,
-	stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type MeasureJob, type MeasureOutput, type MeasureSimJob, type MeasureSimOutput,
+	qualityRows, stateMetrics, type FixedOutput, type Grade, type Grid, type Job, type JobOutput, type MeasureJob, type MeasureOutput, type MeasureSimJob, type MeasureSimOutput,
 	type MeasureSweepIn, type Params, type Session, type SimResult, type StateMetrics, type SweepKind, type TransientOutput,
 } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
@@ -1020,6 +1020,7 @@ function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
 		{ id: "form", title: "두께별 forming 전압", sub: "올린 모든 파일" },
 		{ id: "sens", title: "직렬 저항 민감도", sub: "R_L 가정에 따라 바뀌는 값" },
 	];
+	specs.unshift({ id: "quality", title: "데이터 품질", sub: "측정 자체의 지표와 가정에 따른 흔들림 (A58)", wide: true });
 	if (sim) specs.push({ id: "state", title: "시뮬레이션: RESET 후 / SET 후 필라멘트 형상", sub: "r_b(z)" }, ...timeCards("시뮬레이션 RESET → SET"));
 	specs.push({ id: "table", title: "스윕 분류", sub: "분류를 바꾸면 다시 계산", wide: true });
 	ensureCards(specs);
@@ -1058,6 +1059,23 @@ function renderMeasure(out: MeasureOutput, stats: HTMLElement): void {
 		ft.push(ses.file);
 	}
 	pointsChart(cards.get("form")!, [{ name: "V_forming", x: fx, y: fy, color: 0, text: ft }], "산화막 두께 (nm)", "forming 전압 (V)", { unit: "V" });
+	// 데이터 품질 표
+	const qdiv = cards.get("quality")!;
+	const qt = el("table", "data-table quality-table");
+	qt.innerHTML = "<thead><tr><th>지표</th><th>값</th><th>판단</th><th>설명</th></tr></thead>";
+	const qb = el("tbody");
+	const gradeText: Record<Grade, string> = { good: "좋음", ok: "보통", low: "낮음", info: "참고" };
+	for (const row of qualityRows(out.quality, out.sens)) {
+		const tr = el("tr");
+		const badge = el("span", `grade grade-${row.grade}`, gradeText[row.grade]);
+		const td = el("td");
+		td.append(badge);
+		tr.append(el("td", undefined, row.label), el("td", undefined, row.value), td, el("td", "q-note", row.note));
+		qb.append(tr);
+	}
+	qt.append(qb);
+	qdiv.replaceChildren(qt);
+	qdiv.classList.add("table-host");
 	// 민감도 표
 	const sens = cards.get("sens")!;
 	const tbl = el("table", "data-table");

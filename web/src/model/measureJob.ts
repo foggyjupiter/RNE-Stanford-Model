@@ -8,6 +8,7 @@ import {
 } from "./inverse";
 import { rampWaveform, readResistance, simulate, type SimResult } from "./simulate";
 import type { SweepKind } from "./measurement";
+import { qualityNumbers, type QualityNumbers } from "./quality";
 
 export interface MeasureSweepIn {
 	file: string;
@@ -73,6 +74,7 @@ export interface MeasureOutput {
 	gap: number;	// HRS 중앙값으로 본 끊긴 갭 길이 [m] (호핑 전도가 켜져 있을 때, A55)
 	rNeck: number;	// HRS 중앙값으로 본 잘록 반경 [m] (NaN이면 연속체 모델 범위 밖)
 	neckLen: number;	// [m]
+	quality: QualityNumbers;	// 데이터 품질 지표 (A58)
 	vResetMed: number;
 	iResetMed: number;
 	vSetMed: number;
@@ -146,7 +148,7 @@ export function runMeasure(job: MeasureJob, onProgress?: (done: number, total: n
 	}
 	onProgress?.(1, 1);
 	return {
-		kind: "measure", rPristine, rhoOx, resets, sets, sens, main, curve, kappaEl, phiK, gap, rNeck, neckLen,
+		kind: "measure", rPristine, rhoOx, resets, sets, sens, main, curve, kappaEl, phiK, gap, rNeck, neckLen, quality: qualityNumbers(job.sweeps),
 		vResetMed: median(resets.map((r) => r.vReset)), iResetMed: median(resets.map((r) => r.iReset)),
 		vSetMed: median(sets.map((s) => s.vSet)), rHrsMed,
 	};

@@ -165,3 +165,56 @@ def cycles(ses):
 			out.append((prev, s))
 			prev = None
 	return out
+
+
+def data_quality(sessions):
+	"""데이터 품질 지표 (A58). web/src/model/quality.ts의 qualityNumbers와 같은 계산.
+
+	반환 dict: n_sweeps, n_usable, counts, resets_per_device, n_pre_reset(_min), step, v_reset_quant, v_set_quant,
+	snr(_p25), non_mono, cv_reset, cv_set, s_log_lrs, s_log_hrs, overshoot(_min, _max).
+	"""
+	sw = [s for ses in sessions for s in ses.sweeps]
+	counts = {}
+	for s in sw:
+		counts[s.kind] = counts.get(s.kind, 0) + 1
+	resets = [s for s in sw if s.kind == "reset"]
+	sets = [s for s in sw if s.kind == "set"]
+	npre = [int(np.argmax(np.abs(s.i))) for s in resets]
+	vr = [abs(s.v[k]) for s, k in zip(resets, npre)]
+	steps = [abs(b - a) for s in resets for a, b in zip(s.v[:-1], s.v[1:])]
+	step = float(np.median(steps)) if steps else float("nan")
+	vs = [inv.set_features(np.abs(s.v), np.abs(s.i), s.cc).v_set for s in sets]
+	snr = []
+	for s, k in zip(resets, npre):
+		v = np.abs(s.v[1:k + 1])
+		i = np.abs(s.i[1:k + 1])
+		if len(v) < 4:
+			continue
+		R, P = v / i, v * i
+		res = R - np.polyval(np.polyfit(P, R, 2), P)
+		snr.append((R[-1] / R[0] - 1) / max(np.std(res) / np.mean(R), 1e-6))
+	non_mono = []
+	for s in sw:
+		if s.kind in ("forming", "set"):
+			a = np.abs(s.i[1:])
+			non_mono.append(float(np.mean(np.diff(a) < 0)) if len(a) > 1 else 0.0)
+	rl = [inv.reset_features(np.abs(s.v), np.abs(s.i)).R0 for s in resets]
+	rh = [r for r in (inv.set_features(np.abs(s.v), np.abs(s.i), s.cc).R_hrs for s in sets) if r > 0]
+	ratios = []
+	for ses in sessions:
+		for a, b in cycles(ses):
+			if b.kind == "reset":
+				ratios.append(float(np.abs(b.i).max() / a.cc))
+	med = lambda a: float(np.median(a)) if len(a) else float("nan")
+	cv = lambda a: float(np.std(a) / np.mean(a)) if len(a) > 1 else float("nan")
+	slog = lambda a: float(np.std(np.log10(a))) if len(a) > 1 else float("nan")
+	return {
+		"n_sweeps": len(sw), "n_usable": len(resets) + len(sets), "counts": counts,
+		"resets_per_device": med([sum(1 for s in ses.sweeps if s.kind == "reset") for ses in sessions]),
+		"n_pre_reset": med(npre), "n_pre_reset_min": float(min(npre)) if npre else float("nan"), "step": step,
+		"v_reset_quant": 0.5 * step / med(vr), "v_set_quant": 0.5 * step / med([x for x in vs if np.isfinite(x)]),
+		"snr": med(snr), "snr_p25": float(np.percentile(snr, 25)) if snr else float("nan"), "non_mono": med(non_mono),
+		"cv_reset": cv(vr), "cv_set": cv([x for x in vs if np.isfinite(x)]),
+		"s_log_lrs": slog([r for r in rl if r > 0]), "s_log_hrs": slog(rh),
+		"overshoot": med(ratios), "overshoot_min": min(ratios) if ratios else float("nan"), "overshoot_max": max(ratios) if ratios else float("nan"),
+	}

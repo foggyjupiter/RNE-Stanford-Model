@@ -31,4 +31,4 @@
 ## 측정 데이터 모드 (`golden_measure.py`가 만듦, 노트북과 별도)
 
 - `measure_6nm_fixture.xlsx` — 측정 프로그램과 같은 형식의 엑셀 (시트마다 Sweep Name / Sweep Range / Area Constant / Compliance I, 그 아래 Voltage·Current·J 열). 실험 데이터가 아니라 `examples/synthetic_measurement.csv`(가상 소자)를 0.1 V 계단으로 다시 읽은 것. 포밍 전 누설은 5 GΩ으로 넣음
-- `measure.json` — 위 엑셀의 분류, 0.1 V 저항, 포밍 전 저항, 산화막 비저항, RESET·SET 특징값과 [C] 추출값(R_L 20 Ω, α 1.7e-3), 우리 소자 물성(`OUR_DEVICE`, 셀 1 µm²)의 Rth/R0 곡선과 `fit_lrs` 결과
+- `measure.json` — 위 엑셀의 분류, 0.1 V 저항, 포밍 전 저항, 산화막 비저항, RESET·SET 특징값과 [C] 추출값(R_L 20 Ω, α 1.7e-3), 우리 소자 물성(`OUR_DEVICE`, 셀 1 µm²)의 Rth/R0 곡선과 `fit_lrs` 결과, 열 보정(`fit_kappa_el`), 호핑 갭(`fit_gap`), 데이터 품질 지표(`data_quality`, A58)

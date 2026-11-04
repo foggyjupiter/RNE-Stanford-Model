@@ -93,6 +93,7 @@ k, phi_k = inv.fit_kappa_el(30.0, 2.87e4, p, 800.0, 1.7e-3)
 out["fit_kappa_el"] = {"R0": 30.0, "Rth": 2.87e4, "T_target": 800.0, "kappa_el": k, "phi": phi_k}
 pk = replace(p, kappa_el=k, rho_ox=1.84e10, hop=1)
 out["fit_gap"] = {"R_hrs": 6.4e5, "phi": phi_k, "kappa_el": k, "rho_ox": 1.84e10, "gap": inv.fit_gap(6.4e5, phi_k, 1.0, pk).gap}
+out["quality"] = ms.data_quality([ses])	# 데이터 품질 지표 (A58)
 out["params"] = {"A_cell": p.A_cell, "L0": p.L0}
 json.dump(out, open(GOLDEN / "measure.json", "w"), indent=1)
 print(json.dumps({k: out[k] for k in ("kinds", "rho_ox", "fit_lrs", "fit_kappa_el", "fit_gap")}, ensure_ascii=False))

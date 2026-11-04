@@ -114,6 +114,33 @@
   "rho_ox": 18400000000.0,
   "gap": 2.7558939719789525e-09
  },
+ "quality": {
+  "n_sweeps": 9,
+  "n_usable": 6,
+  "counts": {
+   "forming": 1,
+   "reset": 3,
+   "set": 3,
+   "read": 1,
+   "stopped_hrs": 1
+  },
+  "resets_per_device": 3.0,
+  "n_pre_reset": 14.0,
+  "n_pre_reset_min": 12.0,
+  "step": 0.09999999999999998,
+  "v_reset_quant": 0.035714285714285705,
+  "v_set_quant": 0.08333333333333331,
+  "snr": 47.23948365638046,
+  "snr_p25": 44.49320348563252,
+  "non_mono": 0.0,
+  "cv_reset": 0.11664236870396094,
+  "cv_set": 0.0,
+  "s_log_lrs": 0.0019906537528664283,
+  "s_log_hrs": 4.440892098500626e-16,
+  "overshoot": 1.80348,
+  "overshoot_min": 1.7168599999999998,
+  "overshoot_max": 159.04
+ },
  "params": {
   "A_cell": 1e-12,
   "L0": 6e-09

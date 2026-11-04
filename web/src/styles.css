@@ -835,3 +835,37 @@ summary:focus-visible {
 .file-row .link-btn {
 	white-space: nowrap;
 }
+
+/* 데이터 품질 판단 표시 (A58) */
+.grade {
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	border: 1px solid var(--line);
+}
+
+.grade-good {
+	color: var(--series-1);
+	border-color: var(--series-1);
+}
+
+.grade-ok {
+	color: var(--text-2);
+}
+
+.grade-low {
+	color: var(--series-2);
+	border-color: var(--series-2);
+}
+
+.grade-info {
+	color: var(--text-3);
+}
+
+.quality-table .q-note {
+	white-space: normal;
+	color: var(--text-2);
+	min-width: 220px;
+}

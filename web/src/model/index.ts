@@ -8,3 +8,4 @@ export * from "./inverse";
 export * from "./measurement";
 export * from "./measureJob";
 export * from "./xlsx";
+export * from "./quality";

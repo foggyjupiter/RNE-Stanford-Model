@@ -5,12 +5,13 @@
 // - 모델 곡선과 지름 맞춤: 1e-8. 정상 상태 풀이(대역 Cholesky 대 LU)의 차이 (model.test.ts와 같은 근거).
 // - 열 보정 κ_el (A56): 상대 2e-3. 두 구현 모두 ln κ에서 근 찾기 허용오차 1e-3 (Brent 구현이 달라 그만큼 어긋날 수 있음).
 // - 호핑 갭 (A55): 절대 0.02 nm. 근 찾기 허용오차 0.01 nm의 두 배.
+// - 데이터 품질 지표 (A58): 상대 1e-9 (값이 0에 가까우면 절대 1e-12). 같은 산술, 2차 맞춤만 정규방정식 대 numpy.polyfit.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { goldenPath } from "./golden";
 import {
-	DEFAULT, OUR_DEVICE, firstForming, fitGap, fitKappaEl, fitLrs, lowFieldResistance, modelLrsCurve, oxideResistivity, parseSession, readXlsx, resetFeatures,
+	DEFAULT, OUR_DEVICE, firstForming, qualityNumbers, fitGap, fitKappaEl, fitLrs, lowFieldResistance, modelLrsCurve, oxideResistivity, parseSession, readXlsx, resetFeatures,
 	russoExtraction, setFeatures, type Params, type Session,
 } from "../src/model";
 
@@ -92,4 +93,21 @@ describe("측정 데이터: 열 보정과 호핑 갭", () => {
 		const gap = fitGap(g.R_hrs, g.phi, 1, { ...P, kappaEl: g.kappa_el, rhoOx: g.rho_ox, hop: 1 });
 		expect(Math.abs(gap - g.gap)).toBeLessThan(0.02e-9);
 	}, 120000);
+});
+
+describe("측정 데이터: 품질 지표 (A58)", () => {
+	test("qualityNumbers", async () => {
+		const s = await load();
+		const sweeps = s.sweeps.map((x) => ({ file: x.file, index: x.index, kind: x.kind, v: x.v, i: x.i, cc: x.cc, firstForming: false }));
+		const q = qualityNumbers(sweeps);
+		const g = G.quality;
+		const pairs: [number, number][] = [
+			[q.nSweeps, g.n_sweeps], [q.nUsable, g.n_usable], [q.resetsPerDevice, g.resets_per_device], [q.nPreReset, g.n_pre_reset],
+			[q.nPreResetMin, g.n_pre_reset_min], [q.step, g.step], [q.vResetQuant, g.v_reset_quant], [q.vSetQuant, g.v_set_quant],
+			[q.snr, g.snr], [q.snrP25, g.snr_p25], [q.nonMono, g.non_mono], [q.cvReset, g.cv_reset], [q.cvSet, g.cv_set],
+			[q.sLogLrs, g.s_log_lrs], [q.sLogHrs, g.s_log_hrs], [q.overshoot, g.overshoot], [q.overshootMin, g.overshoot_min], [q.overshootMax, g.overshoot_max],
+		];
+		for (const [a, b] of pairs) expect(Math.abs(a - b)).toBeLessThan(Math.max(1e-9 * Math.abs(b), 1e-12));
+		expect(q.counts).toEqual(g.counts);
+	});
 });
