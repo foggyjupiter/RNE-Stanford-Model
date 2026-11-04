@@ -31,6 +31,7 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # 약 10�
 - `python/golden/`: 2단계용 정답 CSV (`golden/README.md` 참고)
 - `python/inverse.py`: 측정 I-V에서 파라미터 역산 (Russo [7]의 추출법 + 2차원 모델). `python/inverse.ipynb`에 가상 측정으로 한 검증과 사용법
 - `docs/실험정보_요청.md`: 역산에 필요한 실험 정보·데이터 목록
+- `python/measurement.py`: 측정 프로그램 엑셀(.xlsx)을 읽어 스윕을 forming / SET / RESET / 읽기로 분류하고 역산 입력으로 바꿈 (A50)
 
 ## 2단계 — TypeScript 코어
 

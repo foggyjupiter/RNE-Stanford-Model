@@ -1,7 +1,7 @@
 // 앱 진입점: 화면 구성, 상태 → 작업 변환, 계산 예약, 결과 렌더링.
 
 import "./styles.css";
-import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
+import { DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, OUR_DEVICE, filamentCount, stateMetrics, type FixedOutput, type Grid, type Job, type JobOutput, type Params, type SimResult, type StateMetrics, type TransientOutput } from "./model";
 import { ModelClient, SupersededError } from "./model/client";
 import { downloadPng, histogramChart, ivChart, stateProfileChart, stateTrendChart, sweepIvChart, mcHistogramChart, mcScatterChart, profileMapChart, purge, readChart, timeChart } from "./ui/charts";
 import { el, makeField, makeSegmented, makeSwitch, type Field } from "./ui/controls";
@@ -176,6 +176,16 @@ function buildWave(): void {
 		add(numField("vSet", "V<sub>SET,max</sub>", "SET 구간 최대 전압", "V", 0.5, 6, 1, () => w.vSet, (v) => (w.vSet = v)));
 		add(numField("tRamp", "t<sub>ramp</sub>", "구간당 램프 시간", "ms", 1, 10000, 1e-3, () => w.tRamp, (v) => (w.tRamp = v), { log: true, note: "[R]: 4 V/s" }));
 		limitFields(w, "RESET 구간은 제한 없음").forEach(add);
+		if (w.limit === "cc") {
+			add(makeSwitch("CC에 닿으면 멈춤 (측정처럼)", () => w.stopAtCc, (on) => {
+				w.stopAtCc = on;
+				schedule(0);
+			}));
+		}
+		add(makeSwitch("C_P 포함 (SET 순간 방전)", () => w.includeCp, (on) => {
+			w.includeCp = on;
+			schedule(0);
+		}));
 		add(cyclesField(() => w.cycles, (v) => (w.cycles = v)));
 	} else if (state.mode === "pulse") {
 		const w = state.pulse;
@@ -336,13 +346,22 @@ function buildParams(): void {
 	nio.type = "button";
 	nio.addEventListener("click", () => {
 		const back: Partial<Params> = {};
-		for (const k of Object.keys(HFO2_TIN) as (keyof Params)[]) (back as Record<string, number>)[k] = DEFAULT[k];
+		for (const k of Object.keys(OUR_DEVICE) as (keyof Params)[]) (back as Record<string, number>)[k] = DEFAULT[k];
 		apply(back);
 	});
 	const hfo = el("button", "btn", "TiN/HfO₂/TiN 6 nm");
 	hfo.type = "button";
 	hfo.addEventListener("click", () => apply(HFO2_TIN));
-	presets.append(el("span", "preset-note", "소자 프리셋"), nio, hfo);
+	const ours = el("button", "btn", "우리 소자 (6 nm, 20800 µm²)");
+	ours.type = "button";
+	ours.addEventListener("click", () => {
+		apply(OUR_DEVICE);
+		// 실험 조건: SET은 CC(기본 10 µA)에서 멈춤, 패드 정전용량 포함 (A51, A52)
+		state.sweep = { ...state.sweep, limit: "cc", icc: 1e-5, stopAtCc: true, includeCp: true, vReset: 2.0, vSet: 4.0, tRamp: 3.0 };
+		buildWave();
+		schedule(0);
+	});
+	presets.append(el("span", "preset-note", "소자 프리셋"), nio, hfo, ours);
 	box.append(presets);
 	paramFields.length = 0;
 	PARAM_GROUPS.forEach((g, gi) => {
@@ -399,7 +418,10 @@ function currentJob(): Job {
 	const variability = state.variabilityOn ? { ...state.variability } : undefined;
 	if (state.mode === "sweep") {
 		const w = state.sweep;
-		return { kind: "sweep", vReset: w.vReset, vSet: w.vSet, tRamp: w.tRamp, rs: w.rs, iCc: iccOf(w), params: p, cycles: w.cycles, variability, seed: state.seed };
+		return {
+			kind: "sweep", vReset: w.vReset, vSet: w.vSet, tRamp: w.tRamp, rs: w.rs, iCc: iccOf(w), stopAtCc: w.stopAtCc, includeCp: w.includeCp,
+			params: p, cycles: w.cycles, variability, seed: state.seed,
+		};
 	}
 	if (state.mode === "pulse") {
 		const w = state.pulse;

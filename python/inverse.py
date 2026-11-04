@@ -388,8 +388,8 @@ def fit_dissolution(points, rb, p, gs=rm.DEFAULT_GRID, Ed_range=(0.8, 2.0), T_re
 
 
 def model_v_set(rb, p, rate, v_max, icc, gs=rm.DEFAULT_GRID):
-	"""CC SET 램프에서 전류가 처음 0.9*I_CC에 닿는 전압 [V]."""
-	r = rm.simulate(rm.ramp_waveform("set", v_max, rate), rb, p, gs, i_cc=icc)
+	"""CC SET 램프에서 전류가 처음 0.9*I_CC에 닿는 전압 [V]. 측정처럼 CC에 닿으면 멈춘다 (A52)."""
+	r = rm.simulate(rm.ramp_waveform("set", v_max, rate), rb, p, gs, i_cc=icc, cc_hold=0.0)
 	return set_features(r.v_app, r.i, icc, p.RL).v_set, r
 
 
@@ -460,7 +460,17 @@ def invert(sweeps, p, alpha=None, gamma=2.0 / 3.0, gs=rm.DEFAULT_GRID, kinetics=
 	if np.isfinite(Ed_k):
 		log(f"    참고: Kissinger E_d = {Ed_k / rm.EV:.2f} eV ([C] 식 (5) 온도 사용, 온도 오차에 매우 민감해 모델에 넣지 않음, A47)")
 	lrs = fit_lrs(R0, Rth, p, T_crit, alpha, gs)
-	log(f"[3] 필라멘트 지름 {lrs.phi * 1e9:.1f} nm (Rth/R0 ±20% → {lrs.phi_lo * 1e9:.1f}–{lrs.phi_hi * 1e9:.1f} nm), 개수 {lrs.N:.2f}")
+	c = lrs.curve
+	if np.isfinite(lrs.phi):
+		log(f"[3] 필라멘트 지름 {lrs.phi * 1e9:.1f} nm (Rth/R0 ±20% → {lrs.phi_lo * 1e9:.1f}–{lrs.phi_hi * 1e9:.1f} nm), 개수 {lrs.N:.2f}")
+	else:
+		# Rth/R0가 모델 범위 밖: 지름과 개수를 나눌 수 없으니 1개로 두고 R0로만 지름을 정한다 (A43)
+		q = Rth / R0
+		lr = np.log(c["R0"])
+		phi1 = float(np.exp(np.interp(-math.log(R0), -lr, np.log(c["phi"])))) if c["R0"].min() <= R0 <= c["R0"].max() else float("nan")
+		log(f"[3] 측정 Rth/R0 {q:.3g}가 모델 범위({c['ratio'].min():.3g}–{c['ratio'].max():.3g}) 밖 → 지름·개수를 나눌 수 없음."
+			f" 필라멘트 1개로 보면 지름 {phi1 * 1e9:.1f} nm")
+		lrs = LrsFit(phi1, 1.0, float("nan"), float("nan"), c)
 	sets = []
 	for s in sweeps:
 		if s.op == "set":

@@ -57,6 +57,7 @@ class Params:
 	f: float = 1e13	# VO 진동 주파수 [Hz]
 	dr: float = 0.25e-9	# 측면 성장 단위 Delta_r [m] (A4)
 	Z: float = 1.0	# 전하수 [-]
+	set_field: int = 0	# SET 성장식의 전계: 0 = 경계 국소 전계 (A33), 1 = 산화막 평균 전계 V_ox/L0 (A54)
 	# 기생 성분: [M] Table 3
 	RL: float = 20.0	# 전극 접촉 저항 [ohm]
 	CP: float = 20e-15	# 전극 기생 정전용량 [F]
@@ -92,6 +93,19 @@ HFO2_TIN = {
 	"rho_ox": 100.0,	# [ohm m]
 	"kappa_ox": 0.5,	# [W/(K m)]
 	"t_el": 50e-9, "kappa_el": 11.9, "rho_el": 125e-8,	# TiN 전극 (A41)
+}
+
+# 실험 소자 프리셋 (A51, A53): TiN/HfO2/TiN 6 nm, 패드 20800 um^2 (측정 파일의 Area Constant, 사용자 확인).
+# CP = eps0*eps_r*A/t, HfO2 eps_r 20 (ALD 박막, J. Mater. Res. 2005, doi:10.1557/JMR.2005.0394) → 0.61 nF.
+# RL 30 ohm은 추정 (실측 LRS 최솟값 32 ohm 아래). 필라멘트 1개 (A43)
+OUR_DEVICE = {
+	**HFO2_TIN,
+	"A_cell": 20800e-12,	# [m^2]
+	"n_f": 1 / 20800e-12,	# [1/m^2]
+	"CP": 8.8541878128e-12 * 20 * 20800e-12 / 6e-9,	# [F]
+	"RL": 30.0,	# [ohm], 추정
+	"set_field": 1,	# 평균 전계 (A54)
+	"Ea": 1.661 * EV,	# [J], 실측 V_set 2.7 V (CC 10 uA, 1 V/s 가정)에 맞춘 값. Table 3 범위 [0.5, 1.2] eV 밖 (A54)
 }
 
 # TiN 전극 프리셋 (A41). 두께 50 nm는 가정값: 실험 소자의 전극 두께로 바꿔 쓸 것
@@ -329,6 +343,9 @@ def rate_grow(r, E, T, p):
 def boundary_velocity(op, rb, g, fld, p):
 	"""경계 반경의 시간 변화율 [m/s]. op = "set" (성장 + 용해) | "reset" (용해만) (A25)."""
 	Tb, Eb = boundary_values(g, fld, rb)
+	if p.set_field == 1:
+		# 산화막 양 끝 사이 전위차 / 두께 (축 위 칸 기준). 갭 한 칸에 몰린 전압을 국소 전계로 쓰지 않는다 (A54)
+		Eb = np.full_like(Eb, abs(fld.V[-1, 0] - fld.V[0, 0]) / (g.zc[-1] - g.zc[0]))
 	vel = -np.where(rb > 0.0, rate_dissolve(Tb, p), 0.0)
 	if op == "set":
 		vel = vel + rate_grow(rb, Eb, Tb, p)
@@ -439,7 +456,7 @@ CSV_HEADER = "t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"
 
 
 def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, include_cp=False,
-		dv_max=1e-2, drb_max=None, n_snap=0, i_cc=None):
+		dv_max=1e-2, drb_max=None, n_snap=0, i_cc=None, cc_hold=None, dvc_max=None):
 	"""CF 경계를 시간에 따라 움직이며 응답을 계산한다.
 
 	rb0: 초기 경계 반경 (스칼라 또는 높이별 배열). None이면 포밍된 CF (phi0/2).
@@ -449,6 +466,10 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 	n_snap: 등간격 시각에 (rb, T) 스냅숏 저장 개수.
 	i_cc: SET 동작의 전류 제한 [A] (A40). 주면 SET 동작에서 Rs 대신 단자 전류를 i_cc로 자른다.
 		v_app에는 설정 전압을 그대로 기록한다 (측정 I-V처럼 CC 구간이 수평선으로 보인다).
+	cc_hold: 주면 측정기의 "CC에 닿으면 멈춤"을 흉내 낸다 (A52). 단자 전류가 처음 i_cc에 닿은 시각부터
+		인가 전압을 그 값에 고정하고 cc_hold [s] 뒤에 끝낸다 (측정 한 점 동안 CC가 유지되는 시간).
+	dvc_max: 주면 한 스텝의 셀 전압 변화도 이 값 [V] 이하가 되도록 다음 스텝을 줄인다
+		(C_P 방전처럼 빠른 과도를 따라가기 위해, A52). info["i_cell"]에 필라멘트 전류(N*I)를 남긴다.
 	"""
 	g = make_grid(p, gs)
 	nz = len(g.zc)
@@ -466,9 +487,12 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 	T_prev = None
 	out = {k: [] for k in ("t", "v_app", "v_cell", "i", "r_min", "T")}
 	snaps = []
+	i_cells = []
 	dt = 0.0
+	v_freeze = None	# CC에 닿아 고정한 인가 전압 (cc_hold)
+	t_stop = wf.t_end
 	while True:
-		va = wf.v(t)
+		va = wf.v(t) if v_freeze is None else v_freeze
 		op = wf.op(min(t, wf.t_end * (1 - 1e-12)))
 		cc = i_cc is not None and op == "set"
 		r_ser = p.RL + (0.0 if cc else series_r(op, Rs, Rs_reset))
@@ -477,9 +501,14 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		fs.T_last = T_prev
 		vc_new, fld = solve_cell(fs, p, va, r_ser, cp, dt, vc)
 		i_term = (va - vc_new) / r_ser
-		if cc and i_term > i_cc:
+		limited = cc and i_term > i_cc
+		if limited:
 			vc_new, fld = solve_cell_cc(fs, p, i_cc, vc_new, cp, dt, vc)
 			i_term = i_cc
+		if limited and cc_hold is not None and v_freeze is None:
+			v_freeze = va
+			t_stop = min(wf.t_end, t + cc_hold)
+		dvc = abs(vc_new - vc)
 		vc = vc_new
 		T_prev = fs.T_last	# 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		out["t"].append(t)
@@ -488,27 +517,31 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		out["i"].append(i_term)
 		out["r_min"].append(float(rb.min()))
 		out["T"].append(float(fld.T.max()))
+		i_cells.append(p.N * fld.I)
 		while snap_times and t >= snap_times[0] - 1e-15:
 			snaps.append((t, va, rb.copy(), fld.T.copy()))
 			snap_times.pop(0)
-		if t >= wf.t_end:
+		if t >= t_stop:
 			break
 		vel = boundary_velocity(op, rb, g, fld, p)
-		lims = [wf.t_end - t]
+		lims = [t_stop - t]
 		vm = float(np.max(np.abs(vel)))
 		if vm > 0:
 			lims.append(drb_max / vm)
-		slope = abs(wf.v(t + 1e-12 * max(wf.t_end, 1e-9)) - va) / (1e-12 * max(wf.t_end, 1e-9))
-		if slope > 0:
-			lims.append(dv_max / slope)
-		nxt = [c for c in corners if c > t + 1e-18]
-		if nxt:
-			lims.append(nxt[0] - t)	# 파형 꺾임점을 정확히 지난다
+		if v_freeze is None:
+			slope = abs(wf.v(t + 1e-12 * max(wf.t_end, 1e-9)) - va) / (1e-12 * max(wf.t_end, 1e-9))
+			if slope > 0:
+				lims.append(dv_max / slope)
+			nxt = [c for c in corners if c > t + 1e-18]
+			if nxt:
+				lims.append(nxt[0] - t)	# 파형 꺾임점을 정확히 지난다
+		if dvc_max is not None and dt > 0 and dvc > dvc_max:
+			lims.append(dt * dvc_max / dvc)
 		dt = max(min(lims), 1e-15)
 		rb = np.clip(rb + vel * dt, 0.0, p.R_dom)
-		t = min(t + dt, wf.t_end)
+		t = min(t + dt, t_stop)
 	res = Result(*(np.array(out[k]) for k in ("t", "v_app", "v_cell", "i", "r_min", "T")), rb.copy(), snaps,
-			{"steps": len(out["t"]), "z": g.zc.copy(), "r": g.rc.copy()})
+			{"steps": len(out["t"]), "z": g.zc.copy(), "r": g.rc.copy(), "i_cell": np.array(i_cells)})
 	return res
 
 

@@ -15,6 +15,8 @@ export interface SweepJob {
 	tRamp: number;	// 구간당 램프 시간 [s]
 	rs: number;	// SET compliance 저항 [ohm]
 	iCc?: number;	// SET 전류 제한 [A]. 있으면 rs 대신 쓴다 (A40)
+	stopAtCc?: boolean;	// 측정처럼 CC에 닿으면 SET 스윕을 멈춤 (A52). 한 계단(0.1 V) 시간만큼 유지한 뒤 끝
+	includeCp?: boolean;	// C_P(패드 정전용량)를 회로에 넣음. SET 순간 방전 과전류 (A51)
 	params: Params;
 	cycles: number;	// 각 사이클은 직전 사이클의 끝 상태에서 시작
 	variability?: Variability;	// [D] 식 (10),(11)
@@ -112,12 +114,13 @@ export type JobOutput = TransientOutput | FixedOutput;
 export type ProgressFn = (done: number, total: number) => void;
 
 export const V_READ = 0.1;	// 기본 읽기 전압 [V], [C] Fig. 3
+const STEP_V = 0.1;	// 측정 계단 [V] (실험 데이터, A52): CC에 닿은 뒤 유지 시간 = 한 계단 시간
 
 // 각 결과의 시간축을 앞 결과의 끝 시각만큼 밀어 하나로 잇는다 (두 번째부터는 첫 점 제외)
 export function concatResults(parts: SimResult[]): SimResult {
 	const n = parts.reduce((s, r, idx) => s + r.t.length - (idx > 0 ? 1 : 0), 0);
 	const mk = (): Float64Array => new Float64Array(n);
-	const out: SimResult = { ...parts[parts.length - 1], t: mk(), vApp: mk(), vCell: mk(), i: mk(), rMin: mk(), T: mk(), steps: 0 };
+	const out: SimResult = { ...parts[parts.length - 1], t: mk(), vApp: mk(), vCell: mk(), i: mk(), rMin: mk(), T: mk(), iCell: mk(), steps: 0 };
 	let k = 0;
 	let offset = 0;
 	let hotT = -Infinity;
@@ -130,6 +133,7 @@ export function concatResults(parts: SimResult[]): SimResult {
 			out.i[k] = r.i[j];
 			out.rMin[k] = r.rMin[j];
 			out.T[k] = r.T[j];
+			out.iCell[k] = r.iCell[j];
 			k++;
 		}
 		let tm = -Infinity;
@@ -226,8 +230,10 @@ export function runJob(job: Job, onProgress?: ProgressFn): JobOutput {
 		let vRead = V_READ;
 		if (job.kind === "sweep") {
 			// RESET 반쪽과 SET 반쪽을 따로 돌려 이어 붙인다 (가운데 HRS 상태를 읽기 위해)
-			r1 = simulate(resetRampWaveform(job.vReset, job.tRamp), rb, pc, { grid: gs, onProgress: (f) => prog(0.5 * f) });
-			r2 = simulate(setRampWaveform(job.vSet, job.tRamp), r1.rbEnd, pc, { rs: job.rs, iCc: job.iCc, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
+			const cpOpt = job.includeCp ? { includeCp: true, dvcMax: 0.05 } : {};
+			const hold = job.stopAtCc && job.iCc !== undefined ? { ccHold: job.tRamp * STEP_V / job.vSet } : {};
+			r1 = simulate(resetRampWaveform(job.vReset, job.tRamp), rb, pc, { ...cpOpt, grid: gs, onProgress: (f) => prog(0.5 * f) });
+			r2 = simulate(setRampWaveform(job.vSet, job.tRamp), r1.rbEnd, pc, { rs: job.rs, iCc: job.iCc, ...hold, ...cpOpt, grid: gs, onProgress: (f) => prog(0.5 + 0.5 * f) });
 		} else {
 			vRead = job.vRead;
 			r1 = simulate(pulseWaveform("reset", job.reset.v, job.tEdge, job.reset.width), rb, pc, { rs: job.rs, includeCp: true, grid: gs, onProgress: (f) => prog(0.5 * f) });

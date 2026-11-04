@@ -100,8 +100,8 @@ export const PARAM_GROUPS: ParamGroup[] = [
 		title: "기생 성분",
 		hint: "R_L 직렬, C_P 병렬 (A11)",
 		items: [
-			{ key: "RL", symbol: "R<sub>L</sub>", label: "전극 접촉 저항", unit: "Ω", scale: 1, min: 0.1, max: 25 },
-			{ key: "CP", symbol: "C<sub>P</sub>", label: "전극 기생 정전용량", unit: "fF", scale: 1e-15, min: 0.1, max: 25 },
+			{ key: "RL", symbol: "R<sub>L</sub>", label: "직렬 저항 (전극·프로브)", unit: "Ω", scale: 1, min: 0.1, max: 100, log: true, note: "우리 소자 추정 30" },
+			{ key: "CP", symbol: "C<sub>P</sub>", label: "기생(패드) 정전용량", unit: "pF", scale: 1e-12, min: 1e-4, max: 1e4, log: true, note: "매뉴얼 20 fF, 우리 패드 0.61 nF" },
 		],
 	},
 	{

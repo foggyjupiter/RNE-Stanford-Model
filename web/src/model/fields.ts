@@ -388,6 +388,11 @@ export function rateGrow(r: number, E: number, T: number, p: Params): number {
 // 경계 반경의 시간 변화율 [m/s]. op = "set" (성장 + 용해) | "reset" (용해만) (A25)
 export function boundaryVelocity(op: "set" | "reset", rb: ArrayLike<number>, g: Grid, fld: Fields, p: Params): Float64Array {
 	const { Tb, Eb } = boundaryValues(g, fld, rb);
+	if (p.setField === 1) {
+		// 산화막 양 끝 사이 전위차 / 두께 (축 위 칸 기준) (A54)
+		const em = Math.abs(fld.V[(g.nz - 1) * g.nr] - fld.V[0]) / (g.zc[g.nz - 1] - g.zc[0]);
+		Eb.fill(em);
+	}
 	const vel = new Float64Array(g.nz);
 	for (let j = 0; j < g.nz; j++) {
 		let v = rb[j] > 0 ? -rateDissolve(Tb[j], p) : 0;

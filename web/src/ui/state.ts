@@ -22,6 +22,8 @@ export interface SweepSettings {
 	rs: number;	// SET compliance 저항 [ohm]
 	limit: Limit;
 	icc: number;	// SET 전류 제한 [A]
+	stopAtCc: boolean;	// CC에 닿으면 멈춤 (A52)
+	includeCp: boolean;	// C_P 포함 (A51)
 	cycles: number;
 }
 
@@ -73,7 +75,7 @@ export interface AppState {
 // CC 기본값 [A]: 기본 소자(φ 80 nm, [R] Table I)의 R_s 3 kΩ 스윕에서 SET 최대 전류(약 1.2 mA)와 같은 자릿수 (A40)
 export const ICC_DEFAULT = 1e-3;
 
-export const DEFAULT_SWEEP: SweepSettings = { vReset: 1.6, vSet: 4.0, tRamp: 0.25, rs: RS_SET, limit: "rs", icc: ICC_DEFAULT, cycles: 1 };
+export const DEFAULT_SWEEP: SweepSettings = { vReset: 1.6, vSet: 4.0, tRamp: 0.25, rs: RS_SET, limit: "rs", icc: ICC_DEFAULT, stopAtCc: true, includeCp: false, cycles: 1 };
 export const DEFAULT_PULSE: PulseSettings = { op: "reset", amplitude: 3.0, width: 10e-6, tEdge: 10e-9, rs: RS_SET, limit: "rs", icc: ICC_DEFAULT };
 export const DEFAULT_SEQUENCE: SequenceSettings = {
 	resetV: 3.0,

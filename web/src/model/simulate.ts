@@ -148,6 +148,8 @@ export function solveCellCc(fs: FieldSolver, p: Params, iCc: number, vHi: number
 export interface SimOptions {
 	rs?: number;	// SET compliance 저항 [ohm]
 	iCc?: number;	// SET 동작 전류 제한 [A] (A40). 주면 SET에서 rs 대신 단자 전류를 iCc로 자른다
+	ccHold?: number;	// 주면 "CC에 닿으면 멈춤" (A52): 처음 iCc에 닿은 뒤 인가 전압을 고정하고 이 시간 [s] 뒤 끝냄
+	dvcMax?: number;	// 주면 한 스텝의 셀 전압 변화도 이 값 [V] 이하로 (C_P 방전 같은 빠른 과도, A52)
 	rsReset?: number;	// RESET 직렬 저항 [ohm]
 	includeCp?: boolean;	// CP 포함 (펄스)
 	dvMax?: number;	// 한 스텝 전압 변화 상한 [V]
@@ -167,6 +169,7 @@ export interface SimResult {
 	hot: { t: number; v: number; rb: Float64Array; T: Float64Array };	// 최고 온도 시점의 형상과 온도 분포
 	grid: Grid;
 	steps: number;
+	iCell: Float64Array;	// 필라멘트 전류 N·I [A] (C_P 방전이 있으면 단자 전류와 다름)
 	split?: number;	// 이어 붙인 결과에서 두 번째 부분(SET)이 시작하는 인덱스 (concatResults)
 }
 
@@ -190,6 +193,10 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 	const is: number[] = [];
 	const rmins: number[] = [];
 	const tms: number[] = [];
+	const ics: number[] = [];
+	const nF = filamentCount(p);
+	let vFreeze: number | null = null;	// CC에 닿아 고정한 인가 전압 (ccHold)
+	let tStop = wf.tEnd;
 	let hot = { t: 0, v: 0, rb: Float64Array.from(rb), T: new Float64Array(0) };
 	let hotT = -Infinity;
 	let t = 0;
@@ -198,7 +205,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 	let tPrev: Float64Array | null = null;
 	const eps = 1e-12 * Math.max(wf.tEnd, 1e-9);
 	for (;;) {
-		const va = wf.v(t);
+		const va: number = vFreeze ?? wf.v(t);
 		const op = wf.op(Math.min(t, wf.tEnd * (1 - 1e-12)));
 		const cc = o.iCc !== undefined && op === "set";
 		const rSer = p.RL + (cc ? 0 : seriesR(op, rs, rsReset));
@@ -207,11 +214,17 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		fs.tLast = tPrev;
 		let sol = solveCell(fs, p, va, rSer, cp, dt, vc);
 		let iTerm = (va - sol.vc) / rSer;
-		if (cc && iTerm > o.iCc!) {
+		const limited = cc && iTerm > o.iCc!;
+		if (limited) {
 			// 측정기가 출력 전압을 낮춰 전류를 iCc에 고정. vApp에는 설정 전압을 그대로 기록한다
 			sol = solveCellCc(fs, p, o.iCc!, sol.vc, cp, dt, vc);
 			iTerm = o.iCc!;
 		}
+		if (limited && o.ccHold !== undefined && vFreeze === null) {
+			vFreeze = va;
+			tStop = Math.min(wf.tEnd, t + o.ccHold);
+		}
+		const dvc = Math.abs(sol.vc - vc);
 		vc = sol.vc;
 		tPrev = fs.tLast;	// 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		ts.push(t);
@@ -222,24 +235,28 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		for (let j = 0; j < nz; j++) rmin = Math.min(rmin, rb[j]);
 		rmins.push(rmin);
 		tms.push(sol.fld.tMax);
+		ics.push(nF * sol.fld.I);
 		if (sol.fld.tMax > hotT) {
 			hotT = sol.fld.tMax;
 			hot = { t, v: va, rb: Float64Array.from(rb), T: sol.fld.T };
 		}
-		if (t >= wf.tEnd) break;
+		if (t >= tStop) break;
 		o.onProgress?.(t / wf.tEnd);
 		const vel = boundaryVelocity(op, rb, g, sol.fld, p);
-		let dtNext = wf.tEnd - t;
+		let dtNext = tStop - t;
 		let vm = 0;
 		for (let j = 0; j < nz; j++) vm = Math.max(vm, Math.abs(vel[j]));
 		if (vm > 0) dtNext = Math.min(dtNext, drbMax / vm);
-		const slope = Math.abs(wf.v(t + eps) - va) / eps;
-		if (slope > 0) dtNext = Math.min(dtNext, dvMax / slope);
-		const nxt = corners.find((c) => c > t + 1e-18);
-		if (nxt !== undefined) dtNext = Math.min(dtNext, nxt - t);	// 파형 꺾임점을 정확히 지난다
+		if (vFreeze === null) {
+			const slope = Math.abs(wf.v(t + eps) - va) / eps;
+			if (slope > 0) dtNext = Math.min(dtNext, dvMax / slope);
+			const nxt = corners.find((c) => c > t + 1e-18);
+			if (nxt !== undefined) dtNext = Math.min(dtNext, nxt - t);	// 파형 꺾임점을 정확히 지난다
+		}
+		if (o.dvcMax !== undefined && dt > 0 && dvc > o.dvcMax) dtNext = Math.min(dtNext, dt * o.dvcMax / dvc);
 		dt = Math.max(dtNext, 1e-15);
 		for (let j = 0; j < nz; j++) rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt, 0), p.Rdom);
-		t = Math.min(t + dt, wf.tEnd);
+		t = Math.min(t + dt, tStop);
 	}
 	return {
 		t: Float64Array.from(ts),
@@ -252,6 +269,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		hot,
 		grid: g,
 		steps: ts.length,
+		iCell: Float64Array.from(ics),
 	};
 }
 
