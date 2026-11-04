@@ -255,7 +255,7 @@ export class FieldSolver {
 	}
 
 	// 반경이 Δr(= VO 간격 a)보다 작은 행을 갭으로 보고 w_j = 1 − r_b/Δr로 g = Σ w_j dz_j.
-	// 호핑 단면은 갭 양옆 CF 끝 반경 중 작은 쪽 r_s 안 ([D] 식 (6)의 π w²/4, w = 2 r_s) (A55)
+	// 호핑 단면은 CF 몸통 반경 r_s 안 ([D] 식 (6)의 π w²/4, w = 2 r_s) (A55)
 	private setupHop(rb: ArrayLike<number>): void {
 		const { g, p } = this;
 		if (!p.hop) return;
@@ -270,10 +270,10 @@ export class FieldSolver {
 			}
 		}
 		if (j0 < 0 || (j0 === 0 && j1 === g.nz - 1)) return;
-		const ends: number[] = [];
-		if (j0 - 1 >= 0) ends.push(rb[j0 - 1]);
-		if (j1 + 1 < g.nz) ends.push(rb[j1 + 1]);
-		const rs = Math.min(...ends);
+		// 단면 반경 = CF 몸통 반경 (가장 굵은 곳). [D]의 2변수(g, w) 모델에서 w는 CF 폭.
+		// 갭 옆 칸 반경으로 잡으면 갭 칸이 다시 찰 때 옆 칸이 바뀌며 단면이 불연속으로 뛴다
+		let rs = 0;
+		for (let j = 0; j < g.nz; j++) rs = Math.max(rs, rb[j]);
 		if (!(rs > 0)) return;
 		let gl = 0;
 		for (let j = 0; j < g.nz; j++) gl += w[j] * (g.zFaces[j + 1] - g.zFaces[j]);

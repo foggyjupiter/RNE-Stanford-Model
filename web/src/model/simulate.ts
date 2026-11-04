@@ -173,6 +173,8 @@ export interface SimResult {
 	split?: number;	// 이어 붙인 결과에서 두 번째 부분(SET)이 시작하는 인덱스 (concatResults)
 }
 
+const R_ZERO = 1e-6;	// 이보다 작은 경계 반경(Δr 배수)은 0으로 둔다 [-]: 갭 칸이 0과 1e-26 m 사이를 오가며 스텝을 흔드는 것을 막는다 (A57)
+
 // CF 경계를 시간에 따라 움직이며 응답을 계산한다. 경계 이동은 명시적 Euler + 적응 스텝 (A34)
 export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p: Params, o: SimOptions = {}): SimResult {
 	const gs = o.grid ?? DEFAULT_GRID;
@@ -255,7 +257,10 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		}
 		if (o.dvcMax !== undefined && dt > 0 && dvc > o.dvcMax) dtNext = Math.min(dtNext, dt * o.dvcMax / dvc);
 		dt = Math.max(dtNext, 1e-15);
-		for (let j = 0; j < nz; j++) rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt, 0), p.Rdom);
+		for (let j = 0; j < nz; j++) {
+			rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt, 0), p.Rdom);
+			if (rb[j] < R_ZERO * p.dr) rb[j] = 0;	// 사실상 0인 반경은 0으로 (A57)
+		}
 		t = Math.min(t + dt, tStop);
 	}
 	return {

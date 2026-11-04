@@ -247,6 +247,7 @@ class Fields:
 
 
 OFF = 1e-9	# 계산에서 빼는 셀의 전도도 배율 [-] (A41)
+R_ZERO = 1e-6	# 이보다 작은 경계 반경(Delta_r 배수)은 0으로 둔다 [-] (A57)
 
 
 def _face_current(Gb, Gz, Gt, V, va):
@@ -285,7 +286,7 @@ class FieldSolver:
 	def _setup_hop(self, g, p, rb):
 		"""갭 호핑 전도 준비 (A55). 반경이 Delta_r(= VO 간격 a)보다 작은 행을 갭으로 보고
 		무게 w_j = 1 - r_b/Delta_r (0..1)로 갭 길이 g = sum w_j dz_j 를 잡는다 (경계가 움직일 때 매끄럽게).
-		호핑 단면은 갭 양옆 CF 끝 반경 중 작은 쪽 r_s 안의 셀 ([D] 식 (6)의 pi w^2/4, w = 2 r_s)."""
+		호핑 단면은 CF 몸통 반경 r_s 안의 셀 ([D] 식 (6)의 pi w^2/4, w = 2 r_s)."""
 		self.g_hop = 0.0
 		self.vg_last = None
 		if not p.hop:
@@ -296,8 +297,9 @@ class FieldSolver:
 		if gap_rows.size == 0 or gap_rows.size == len(rb):
 			return
 		j0, j1 = gap_rows[0], gap_rows[-1]
-		ends = [rb[j] for j in (j0 - 1, j1 + 1) if 0 <= j < len(rb)]
-		r_s = float(min(ends))
+		# 단면 반경 = CF 몸통 반경 (가장 굵은 곳). [D]의 2변수(g, w) 모델에서 w는 CF 폭이다.
+		# 갭 옆 칸 반경으로 잡으면 갭 칸이 다시 찰 때 옆 칸이 바뀌며 단면이 불연속으로 뛴다
+		r_s = float(np.max(rb))
 		if r_s <= 0:
 			return
 		r0 = g.r_faces[:-1]
@@ -611,6 +613,8 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 			lims.append(dt * dvc_max / dvc)
 		dt = max(min(lims), 1e-15)
 		rb = np.clip(rb + vel * dt, 0.0, p.R_dom)
+		# 사실상 0인 반경은 0으로: 갭 칸이 0과 1e-26 m 사이를 오가며 스텝 크기를 흔드는 것을 막는다 (A57)
+		rb[rb < R_ZERO * p.dr] = 0.0
 		t = min(t + dt, t_stop)
 	res = Result(*(np.array(out[k]) for k in ("t", "v_app", "v_cell", "i", "r_min", "T")), rb.copy(), snaps,
 			{"steps": len(out["t"]), "z": g.zc.copy(), "r": g.rc.copy(), "i_cell": np.array(i_cells)})
