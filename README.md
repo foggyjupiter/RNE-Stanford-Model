@@ -1,7 +1,7 @@
 # RRAM 시뮬레이터
 
 금속산화물 **unipolar** RRAM의 전도성 필라멘트(conductive filament) 모델을 독립적으로 구현하고, 브라우저에서 돌아가는 시뮬레이터를 만드는 프로젝트입니다.
-프로젝트 지침: `CLAUDE.md`. 가정과 그 근거: `ASSUMPTIONS.md`.
+프로젝트 지침: `CLAUDE.md`. 가정과 그 근거: `ASSUMPTIONS.md`. 진행 상황·측정 데이터 분석 기록·남은 결정: `docs/진행상황_인수인계.md`.
 
 ## 진행 상황
 
