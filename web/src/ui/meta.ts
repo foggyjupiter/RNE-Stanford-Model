@@ -76,6 +76,7 @@ export const PARAM_GROUPS: ParamGroup[] = [
 			{ key: "kappaCf", symbol: "κ<sub>CF</sub>", label: "CF 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 50 },
 			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 0.1, max: 30, log: true, note: "HfO₂ 0.5–0.95 [11], [12]" },
 			{ key: "T0", symbol: "T<sub>0</sub>", label: "소자 온도", unit: "K", scale: 1, min: 150, max: 450 },
+			{ key: "Tcap", symbol: "T<sub>cap</sub>", label: "온도 상한 (산화막 녹는점, 0 = 끔)", unit: "K", scale: 1, min: 0, max: 4000, note: "NiO 2228, HfO₂ 3047 (A59)" },
 		],
 	},
 	{

@@ -160,6 +160,27 @@ describe("golden: 우리 소자", () => {
 		expect(windowedRelErr(r.t, r.rMin, g.t_s, g.r_min_m, 1e-10)).toBeLessThan(1e-5);
 		expect(windowedRelErr(r.t, r.T, g.t_s, g.T_max_K, 0)).toBeLessThan(1e-5);
 	}, 300000);
+	// 갭 호핑을 켠 RESET (A55, A61). 끊기기 전(갭이 생기기 전)까지는 파형을 비교한다: 스텝 상한이 gT/5로 작아
+	// 스텝이 많아서 반올림 누적이 크다(관측 최악 ~4e-5) → 1e-4. 끊긴 뒤 CF 끝이 녹는 과정은 작은 차이를 키우는
+	// 불안정이라(A61) 파형은 수십 % 갈라질 수 있어, 끝 상태의 HRS(1%)와 갭 길이(한 칸)로 본다. 관측: HRS 0.1% 차이.
+	test("our_reset_ramp_hop.csv", () => {
+		const g = loadCsv("our_reset_ramp_hop.csv");
+		const ge = Float64Array.from(loadCsv("our_hrs_profile_hop.csv").rb_m);
+		const Ph = { ...Pour, hop: 1 } as Params;
+		const r = simulate(rampWaveform("reset", 1.5, 1.0), null, Ph, {});
+		let kb = g.r_min_m.findIndex((x) => x < Ph.dr);	// golden에서 처음 갭이 생긴 샘플
+		if (kb < 0) kb = g.r_min_m.length;
+		const pre = (a: number[]): number[] => a.slice(0, kb);
+		const imax = Math.max(...g.i_A.map(Math.abs));
+		expect(windowedRelErr(r.t, r.i, pre(g.t_s), pre(g.i_A), 1e-3 * imax)).toBeLessThan(1e-4);
+		expect(windowedRelErr(r.t, r.rMin, pre(g.t_s), pre(g.r_min_m), 1e-10)).toBeLessThan(1e-4);
+		expect(windowedRelErr(r.t, r.T, pre(g.t_s), pre(g.T_max_K), 0)).toBeLessThan(1e-4);
+		const hrsG = readResistance(ge, Ph);
+		expect(Math.abs(readResistance(r.rbEnd, Ph) - hrsG) / hrsG).toBeLessThan(0.01);
+		const dz = Ph.L0 / DEFAULT_GRID.nz;
+		const gapLen = (rb: ArrayLike<number>): number => Array.from(rb).reduce((acc, x) => acc + Math.max(0, 1 - x / Ph.dr), 0) * dz;
+		expect(Math.abs(gapLen(r.rbEnd) - gapLen(ge))).toBeLessThan(dz * 1.0001);
+	}, 600000);
 	const cases: [string, SimOptions, boolean][] = [
 		["our_set_cc_stop.csv", { iCc: 1e-4, ccHold: 0.1 }, false],
 		["our_set_cc_stop_cp.csv", { iCc: 1e-4, ccHold: 0.1, includeCp: true, dvcMax: 0.05 }, true],

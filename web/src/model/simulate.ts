@@ -153,7 +153,7 @@ export interface SimOptions {
 	rsReset?: number;	// RESET 직렬 저항 [ohm]
 	includeCp?: boolean;	// CP 포함 (펄스)
 	dvMax?: number;	// 한 스텝 전압 변화 상한 [V]
-	drbMax?: number;	// 한 스텝 경계 이동 상한 [m], 기본 drFine/4
+	drbMax?: number;	// 한 스텝 경계 이동 상한 [m], 기본 drFine/4 (호핑을 켜면 gT/5 이하)
 	grid?: GridSpec;
 	onProgress?: (frac: number) => void;
 }
@@ -183,7 +183,10 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 	const rs = o.rs ?? 3e3;
 	const rsReset = o.rsReset ?? 0;
 	const dvMax = o.dvMax ?? 1e-2;
-	const drbMax = o.drbMax ?? gs.drFine / 4;
+	let drbMax = gs.drFine / 4;	// (A34)
+	// 호핑을 켜면 갭 길이·끝 반경 오차가 exp(-g/gT)로 HRS에 들어가므로 gT/5 이하 (A55)
+	if (p.hop) drbMax = Math.min(drbMax, 0.2 * p.gT);
+	if (o.drbMax !== undefined) drbMax = o.drbMax;
 	let rb = new Float64Array(nz);
 	if (rb0 === null) rb.fill(p.phi0 / 2);
 	else if (typeof rb0 === "number") rb.fill(rb0);

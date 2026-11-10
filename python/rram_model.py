@@ -50,6 +50,7 @@ class Params:
 	Ed: float = 1.2 * EV	# 열 용해 활성화 에너지 [J], [R] 식 (5)의 Ea
 	vD0: float = 200.0	# 용해 속도 전인자 [m/s], [R] 식 (5) ([R]에서도 피팅값)
 	T0: float = 300.0	# 소자(주변) 온도 [K]
+	T_cap: float = 2228.0	# 온도 상한 [K] = 산화막 녹는점, 0이면 끔 (A59). NiO 1955 C (Wikipedia, NiO)
 	R_dom: float = 53.3e-9	# 계산 영역 반경 [m]. [R] Fig. 4 B점(0.78 V에서 530 K)에 맞춘 값 (A31)
 	# SET 측면 성장: [D] 식 (2), 값은 [M] Table 3
 	Ea: float = 0.7 * EV	# VO 평균 활성화 에너지 [J]
@@ -97,6 +98,7 @@ HFO2_TIN = {
 	"kappa_cf": 20.0,	# [W/(K m)]
 	"rho_ox": 100.0,	# [ohm m]
 	"kappa_ox": 0.5,	# [W/(K m)]
+	"T_cap": 3047.0,	# [K], HfO2 녹는점 2774 C (CRC Handbook 77th ed., WebElements 인용) (A59)
 	"t_el": 50e-9, "kappa_el": 11.9, "rho_el": 125e-8,	# TiN 전극 (A41)
 }
 
@@ -248,6 +250,7 @@ class Fields:
 
 OFF = 1e-9	# 계산에서 빼는 셀의 전도도 배율 [-] (A41)
 R_ZERO = 1e-6	# 이보다 작은 경계 반경(Delta_r 배수)은 0으로 둔다 [-] (A57)
+SYM_EPS = 1e-6	# 호핑을 켤 때 위아래 대칭을 깨는 상대 속도 차 [-] (A61)
 
 
 def _face_current(Gb, Gz, Gt, V, va):
@@ -359,6 +362,9 @@ class FieldSolver:
 			bt[0, :] += self.Gb_th * p.T0
 			bt[-1, :] += self.Gt_th * p.T0
 			T_new = self.lu_th.solve(bt.ravel()).reshape(nz, nr)
+			if p.T_cap > 0:
+				# 녹는점 위는 잘라 녹는점에 둔다: 녹는 동안 잠열로 온도가 머무는 것을 흉내 낸 것 (A59)
+				np.minimum(T_new, p.T_cap, out=T_new)
 			dT = float(np.max(np.abs(T_new - T)))
 			T = T_new if it == 0 else T + relax * (T_new - T)
 			dvg = 0.0
@@ -425,6 +431,10 @@ def boundary_velocity(op, rb, g, fld, p):
 		vel = vel + rate_grow(rb, Eb, Tb, p)
 	# 영역 밖으로는 자라지 않는다
 	vel = np.where((rb >= 0.98 * p.R_dom) & (vel > 0), 0.0, vel)
+	if p.hop:
+		# 위아래 대칭 깨기 (A61): 끊긴 뒤 양쪽 CF 끝이 대칭인 상태는 불안정해 반올림이 갈래를 정한다.
+		# 높이에 따라 1e-6만큼 다른 속도로 두 구현이 같은 (비대칭) 갈래로 가게 한다
+		vel = vel * (1.0 + SYM_EPS * (g.zc / p.L0 - 0.5))
 	return vel
 
 
@@ -553,7 +563,11 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		rb = np.full(nz, float(rb0))
 	else:
 		rb = np.array(rb0, dtype=float)
-	drb_max = drb_max if drb_max is not None else gs.dr_fine / 4
+	if drb_max is None:
+		drb_max = gs.dr_fine / 4	# (A34)
+		if p.hop:
+			# 호핑을 켜면 갭 길이·끝 반경 오차가 exp(-g/gT)로 HRS에 들어가므로 gT/5 이하 (A55)
+			drb_max = min(drb_max, 0.2 * p.gT)
 	corners = sorted(set(float(c) for c in wf.corners if 0 < c < wf.t_end))
 	snap_times = list(np.linspace(0, wf.t_end, n_snap)) if n_snap else []
 	t = 0.0

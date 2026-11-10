@@ -18,6 +18,7 @@ export interface Params {
 	Ed: number;	// 열 용해 활성화 에너지 [J], [R] 식 (5)
 	vD0: number;	// 용해 속도 전인자 [m/s], [R] 식 (5)
 	T0: number;	// 소자 온도 [K]
+	Tcap: number;	// 온도 상한 [K] = 산화막 녹는점, 0이면 끔 (A59)
 	Rdom: number;	// 계산 영역 반경 [m] (A31)
 	Ea: number;	// SET: VO 평균 활성화 에너지 [J], [D] 식 (2)
 	alphaA: number;	// SET: 에너지 증강 계수 [m]
@@ -49,6 +50,7 @@ export const DEFAULT: Readonly<Params> = Object.freeze({
 	Ed: 1.2 * EV,	// [J], [R] Table I
 	vD0: 200,	// [m/s], [R] Table I (피팅값)
 	T0: 300,	// [K]
+	Tcap: 2228,	// [K], NiO 녹는점 1955 C (Wikipedia, NiO) (A59)
 	Rdom: 53.3e-9,	// [m], [R] Fig. 4 B점(0.78 V, 530 K)에 맞춤 (A31)
 	Ea: 0.7 * EV,	// [J], [M] Table 3
 	alphaA: 0.75e-9,	// [m], [M] Table 3
@@ -85,6 +87,7 @@ export const HFO2_TIN: Readonly<Partial<Params>> = Object.freeze({
 	kappaCf: 20,	// [W/(K m)]
 	rhoOx: 100,	// [ohm*m]
 	kappaOx: 0.5,	// [W/(K m)]
+	Tcap: 3047,	// [K], HfO2 녹는점 2774 C (CRC Handbook 77th ed., WebElements 인용) (A59)
 	tEl: 50e-9,	// [m], 가정 (A41)
 	kappaEl: 11.9,	// [W/(K m)]
 	rhoEl: 125e-8,	// [ohm*m]

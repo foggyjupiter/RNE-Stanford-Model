@@ -366,6 +366,8 @@ export class FieldSolver {
 				tNew[(nz - 1) * nr + i] += this.th.gTop[i] * p.T0;
 			}
 			this.th.A.solve(tNew);
+			// 녹는점 위는 잘라 녹는점에 둔다: 녹는 동안 잠열로 온도가 머무는 것을 흉내 낸 것 (A59)
+			if (p.Tcap > 0) for (let m = 0; m < n; m++) tNew[m] = Math.min(tNew[m], p.Tcap);
 			let dT = 0;
 			for (let m = 0; m < n; m++) dT = Math.max(dT, Math.abs(tNew[m] - T[m]));
 			if (it === 0) {
@@ -472,6 +474,8 @@ export function rateGrow(r: number, E: number, T: number, p: Params): number {
 	return pref * p.f * Math.exp(-(p.Ea - p.alphaA * p.Z * Q_E * E) / (K_B * T));
 }
 
+const SYM_EPS = 1e-6;	// 호핑을 켤 때 위아래 대칭을 깨는 상대 속도 차 [-] (A61)
+
 // 경계 반경의 시간 변화율 [m/s]. op = "set" (성장 + 용해) | "reset" (용해만) (A25)
 export function boundaryVelocity(op: "set" | "reset", rb: ArrayLike<number>, g: Grid, fld: Fields, p: Params): Float64Array {
 	const { Tb, Eb } = boundaryValues(g, fld, rb);
@@ -485,6 +489,9 @@ export function boundaryVelocity(op: "set" | "reset", rb: ArrayLike<number>, g: 
 		let v = rb[j] > 0 ? -rateDissolve(Tb[j], p) : 0;
 		if (op === "set") v += rateGrow(rb[j], Eb[j], Tb[j], p);
 		if (rb[j] >= 0.98 * p.Rdom && v > 0) v = 0;	// 영역 밖으로는 자라지 않는다
+		// 위아래 대칭 깨기 (A61): 끊긴 뒤 양쪽 CF 끝이 대칭인 상태는 불안정해 반올림이 갈래를 정한다.
+		// 높이에 따라 1e-6만큼 다른 속도로 두 구현이 같은 (비대칭) 갈래로 가게 한다
+		if (p.hop) v *= 1 + SYM_EPS * (g.zc[j] / p.L0 - 0.5);
 		vel[j] = v;
 	}
 	return vel;
