@@ -33,6 +33,7 @@ jupyter nbconvert --to notebook --execute --inplace reference.ipynb   # 약 10�
 - `docs/실험정보_요청.md`: 역산에 필요한 실험 정보·데이터 목록
 - `python/measurement.py`: 측정 프로그램 엑셀(.xlsx)을 읽어 스윕을 forming / SET / RESET / 읽기로 분류하고 역산 입력으로 바꿈 (A50)
 - `python/golden_measure.py`: 측정 데이터 모드 정답지(`golden/measure_6nm_fixture.xlsx`, `golden/measure.json`)
+- `python/analyze_measurements.py`: 측정 엑셀 폴더 → 분석 보고서(`docs/측정데이터_분석.md`: 파일별 분류, 두께별 forming, RESET 크기 법칙, CC와 LRS, 데이터 품질, 정적 역산). `python analyze_measurements.py <엑셀 폴더>`
 
 ## 2단계 — TypeScript 코어
 
