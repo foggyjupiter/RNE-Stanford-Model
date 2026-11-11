@@ -199,7 +199,15 @@ describe("golden: 우리 소자", () => {
 			const kg = ccIndex(g.i_A);
 			expect(Math.abs(r.vApp[k] - g.v_app_V[kg])).toBeLessThan(0.02);
 			// C_P가 있으면 CC 도달이 방전으로 반경이 급히 자라는 도중이라 도달 순간 반경은 스텝 시각에 민감 → 끝 상태로 본다
-			if (!endState) expect(Math.abs(r.rMin[k] - g.r_min_m[kg]) / g.r_min_m[kg]).toBeLessThan(1e-5);
+			if (!endState) {
+				// CC에 닿는 스텝은 SET 폭주 한가운데라(한 스텝에 가장 가는 곳이 0.05 → 0.9 nm) 두 구현의 샘플 시각 차이
+				// (기울기 차분의 반올림으로 쌓인 약 2e-5 V)가 수 %로 커진다(ZrO2 프리셋에서 관측 2%). 그래서 폭주 전까지의
+				// 파형은 ±1 샘플 창 안에서 1e-3으로 보고(관측 최악 ~2e-4, 폭주가 시작되는 직전 샘플), 도달 순간 반경은 5%로 본다
+				const pre = (a: number[]): number[] => a.slice(0, kg);
+				expect(windowedRelErr(r.t, r.rMin, pre(g.t_s), pre(g.r_min_m), 1e-10)).toBeLessThan(1e-3);
+				expect(windowedRelErr(r.t, r.i, pre(g.t_s), pre(g.i_A), 1e-3 * Math.max(...pre(g.i_A).map(Math.abs)))).toBeLessThan(1e-3);
+				expect(Math.abs(r.rMin[k] - g.r_min_m[kg]) / g.r_min_m[kg]).toBeLessThan(0.05);
+			}
 			const cm = amax(g.i_cell_A);
 			expect(Math.abs(amax(r.iCell) - cm) / cm).toBeLessThan(0.05);
 			if (endState) {

@@ -2,7 +2,7 @@
 
 import "./styles.css";
 import {
-	DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, HFO2_TIN, KIND_LABELS, OUR_DEVICE, concatResults, filamentCount, median as medianOf, parseSession, readXlsx,
+	DEFAULT, DEFAULT_MC, DEFAULT_VARIABILITY, EPS_ZRO2, KIND_LABELS, OUR_DEVICE, ZRO2_TIN, concatResults, filamentCount, median as medianOf, parseSession, readXlsx,
 	qualityRows, stateMetrics, type FixedOutput, type Grade, type Grid, type Job, type JobOutput, type MeasureJob, type MeasureOutput, type MeasureSimJob, type MeasureSimOutput,
 	type MeasureSweepIn, type Params, type Session, type SimResult, type StateMetrics, type SweepKind, type TransientOutput,
 } from "./model";
@@ -344,7 +344,7 @@ function buildParams(): void {
 	});
 	head.append(resetAll);
 	box.replaceChildren(head);
-	// 소자 프리셋: 기본(NiO, [R]) / TiN/HfO2/TiN 6 nm (A48)
+	// 소자 프리셋: 기본(NiO, [R]) / TiN/ZrO2/TiN 6 nm (A62) / 우리 소자
 	const presets = el("div", "preset device-preset");
 	const apply = (values: Partial<Params>): void => {
 		state.params = { ...state.params, ...values };
@@ -360,9 +360,9 @@ function buildParams(): void {
 		for (const k of Object.keys(OUR_DEVICE) as (keyof Params)[]) (back as Record<string, number>)[k] = DEFAULT[k];
 		apply(back);
 	});
-	const hfo = el("button", "btn", "TiN/HfO₂/TiN 6 nm");
-	hfo.type = "button";
-	hfo.addEventListener("click", () => apply(HFO2_TIN));
+	const zro = el("button", "btn", "TiN/ZrO₂/TiN 6 nm");
+	zro.type = "button";
+	zro.addEventListener("click", () => apply(ZRO2_TIN));
 	const ours = el("button", "btn", "우리 소자 (6 nm, 20800 µm²)");
 	ours.type = "button";
 	ours.addEventListener("click", () => {
@@ -372,7 +372,7 @@ function buildParams(): void {
 		buildWave();
 		schedule(0);
 	});
-	presets.append(el("span", "preset-note", "소자 프리셋"), nio, hfo, ours);
+	presets.append(el("span", "preset-note", "소자 프리셋"), nio, zro, ours);
 	box.append(presets);
 	paramFields.length = 0;
 	PARAM_GROUPS.forEach((g, gi) => {
@@ -793,7 +793,6 @@ const kindOverride = new Map<string, SweepKind>();	// "파일#순서" → 손으
 let lastSim: MeasureSimOutput | null = null;
 let simKey = "";	// 시뮬레이션을 계산한 측정 분석 조건 (바뀌면 겹쳐 그리지 않음)
 const EPS0 = 8.8541878128e-12;	// 진공 유전율 [F/m]
-const EPS_HFO2 = 20;	// HfO2 비유전율 (ALD 박막, A51)
 const RL_SENS = [0, 10, 20, 30];	// 직렬 저항 민감도 [ohm]
 
 const swKey = (file: string, index: number): string => `${file}#${index}`;
@@ -831,7 +830,7 @@ function measureParams(): Params {
 	const ses = selectedSessions();
 	const t = Number.isFinite(state.measure.thickness) ? state.measure.thickness : state.params.L0;
 	const area = ses.find((s) => Number.isFinite(s.area))?.area ?? state.params.aCell;
-	return { ...state.params, L0: t, aCell: area, nF: 1 / area, CP: EPS0 * EPS_HFO2 * area / t };
+	return { ...state.params, L0: t, aCell: area, nF: 1 / area, CP: EPS0 * EPS_ZRO2 * area / t };
 }
 
 function measureJob(): MeasureJob {
@@ -857,7 +856,7 @@ async function loadFiles(files: File[]): Promise<void> {
 	if (groups.length && !groups.some((g) => g.t === state.measure.thickness)) {
 		state.measure.thickness = groups.reduce((a, b) => (b.n > a.n ? b : a)).t;
 	}
-	// 물성이 아직 기본(NiO)이면 우리 소자 물성(TiN/HfO2)으로 바꾼다
+	// 물성이 아직 기본(NiO)이면 우리 소자 물성(TiN/ZrO2)으로 바꾼다
 	if (state.params.L0 === DEFAULT.L0) {
 		state.params = { ...state.params, ...OUR_DEVICE };
 		for (const fl of paramFields) fl.refresh();
@@ -917,7 +916,7 @@ function measurePanel(s: HTMLElement, add: (f: Field) => void): void {
 		}
 	}
 	add(numField("mRate", "dV/dt", "평균 램프 속도 (계단 / 머무는 시간)", "V/s", 0.01, 100, 1, () => w.rate, (v) => (w.rate = v), { log: true, note: "가정 (A50)" }));
-	add(numField("mAlpha", "α", "필라멘트 저항 온도 계수", "10⁻³/K", 0.1, 5, 1e-3, () => w.alpha, (v) => (w.alpha = v), { log: true, note: "[C] NiO 1.7, HfOₓ 미확인" }));
+	add(numField("mAlpha", "α", "필라멘트 저항 온도 계수", "10⁻³/K", 0.1, 5, 1e-3, () => w.alpha, (v) => (w.alpha = v), { log: true, note: "[C] NiO 1.7, ZrOₓ 미확인" }));
 	add(numField("mRL", "R<sub>L</sub>", "직렬 저항 (프로브·배선)", "Ω", 0, 60, 1, () => state.params.RL, (v) => {
 		state.params = { ...state.params, RL: v };
 		for (const fl of paramFields) fl.refresh();

@@ -76,7 +76,7 @@ export function filamentCount(p: Params): number {
 	return Math.max(1, Math.round(p.nF * p.aCell));
 }
 
-// TiN/HfO2/TiN 소자 프리셋 (A48). 산화막 6 nm는 실험 소자 값 (사용자 제공).
+// TiN/HfO2/TiN 소자 프리셋 (A48). 산화막 6 nm. 실험 소자의 산화막을 HfO2로 가정했던 것 (실제는 ZrO2, 아래 ZRO2_TIN).
 // HfO2·필라멘트(HfO2-x) 물성: Niraula & Karpov, IEEE TED 64(10) 4106 (2017)
 // (HfO2 kappa 0.5 W/(K m), sigma 1e-2 S/m; HfO2-x kappa 20 W/(K m), sigma 1e5 S/m).
 // phi0 5 nm는 가정 (측정에서 역산할 값). alphaT, Ed, vD0는 [R] 값 그대로 (역산 대상)
@@ -93,14 +93,29 @@ export const HFO2_TIN: Readonly<Partial<Params>> = Object.freeze({
 	rhoEl: 125e-8,	// [ohm*m]
 });
 
-// 실험 소자 프리셋 (A51, A53): TiN/HfO2/TiN 6 nm, 패드 20800 um^2 (측정 파일의 Area Constant, 사용자 확인).
-// CP = eps0*eps_r*A/t, HfO2 eps_r 20 (ALD 박막, J. Mater. Res. 2005, doi:10.1557/JMR.2005.0394) → 0.61 nF.
-// RL 30 ohm: 측정 RESET의 Rth/R0가 2차원 모델 범위에 들어오는 직렬 저항 (실측 LRS 최솟값 32 ohm과 비슷). 추정값
-export const OUR_DEVICE: Readonly<Partial<Params>> = Object.freeze({
+// TiN/ZrO2/TiN 소자 프리셋 (A62). 실험 소자의 산화막은 ZrO2 (사용자 확인, 2026-11-11). 위 HfO2 프리셋(A48)은 가정이었음.
+// kappaOx 1.4 W/(K m): ALD YSZ 박막 TDTR 1.35-1.5 W/(K m), 비정질 하한 1.25 (순수 ZrO2 박막 측정값은 못 찾음).
+//   벌크 ZrO2는 3.5 W/(K m) (Patil et al., J. Nano- Electron. Phys.)
+// Tcap: ZrO2 녹는점 2715 C = 2988 K (A59)
+// rhoOx: ZrO2 문헌값을 못 찾아 우리 소자의 포밍 전 저항(2.62 GOhm, 0.1 V)에서 역산한 값 (A44)
+// 필라멘트(ZrO2-x) 물성은 출처를 못 찾아 HfO2-x 값(Niraula & Karpov 2017)을 그대로 씀 (A62)
+export const ZRO2_TIN: Readonly<Partial<Params>> = Object.freeze({
 	...HFO2_TIN,
+	rhoOx: 9.08e9,	// [ohm*m], 측정에서 역산 (A44)
+	kappaOx: 1.4,	// [W/(K m)]
+	Tcap: 2988,	// [K]
+});
+
+// ZrO2 비유전율: 비정질 ALD 박막 약 20 (보고 12-24, 결정화(정방정)하면 31-38). 증착 직후 비정질로 가정 (A51, A62)
+export const EPS_ZRO2 = 20;	// [-]
+
+// 실험 소자 프리셋 (A51, A53, A62): TiN/ZrO2/TiN 6 nm, 패드 20800 um^2 (측정 파일의 Area Constant, 사용자 확인).
+// CP = eps0*eps_r*A/t → 0.61 nF. RL 30 ohm은 추정 (실측 LRS 최솟값 32 ohm과 비슷)
+export const OUR_DEVICE: Readonly<Partial<Params>> = Object.freeze({
+	...ZRO2_TIN,
 	aCell: 20800e-12,	// [m^2]
 	nF: 1 / 20800e-12,	// [1/m^2], 필라멘트 1개 (A43)
-	CP: 8.8541878128e-12 * 20 * 20800e-12 / 6e-9,	// [F]
+	CP: 8.8541878128e-12 * EPS_ZRO2 * 20800e-12 / 6e-9,	// [F]
 	RL: 30,	// [ohm], 추정
 	setField: 1,	// 평균 전계 (A54)
 	hop: 0,	// 갭 호핑 전도: 과도 계산에서는 끔 (HRS 갭 가열이 수천 K가 되어 적분이 멈춤, A55). 갭 역산(정적)에서만 켬

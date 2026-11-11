@@ -58,9 +58,9 @@ export const PARAM_GROUPS: ParamGroup[] = [
 	{
 		id: "geometry",
 		title: "소자 형상",
-		hint: "기본값은 [R] Table I의 NiO 소자. 위 소자 프리셋으로 TiN/HfO₂/TiN (A48)",
+		hint: "기본값은 [R] Table I의 NiO 소자. 위 소자 프리셋으로 TiN/ZrO₂/TiN (A62)",
 		items: [
-			{ key: "L0", symbol: "t", label: "산화막 두께 = CF 길이", unit: "nm", scale: 1e-9, min: 2, max: 300, log: true, note: "NiO 160 [6], HfO₂ 실험 6" },
+			{ key: "L0", symbol: "t", label: "산화막 두께 = CF 길이", unit: "nm", scale: 1e-9, min: 2, max: 300, log: true, note: "NiO 160 [6], ZrO₂ 실험 6" },
 			{ key: "phi0", symbol: "φ", label: "포밍된 CF 지름", unit: "nm", scale: 1e-9, min: 1, max: 100, log: true, note: "역산 대상" },
 			{ key: "Rdom", symbol: "R<sub>dom</sub>", label: "계산 영역 반경", unit: "nm", scale: 1e-9, min: 30, max: 500, log: true, note: "보정값 (A31)" },
 		],
@@ -72,11 +72,11 @@ export const PARAM_GROUPS: ParamGroup[] = [
 		items: [
 			{ key: "rhoCf", symbol: "ρ<sub>CF</sub>", label: "CF 비저항 (T₀)", unit: "µΩ·cm", scale: 1e-8, min: 31, max: 2000, log: true, note: "문헌 31–670" },
 			{ key: "alphaT", symbol: "α", label: "CF 비저항 온도 계수", unit: "1/K", scale: 1, min: 0, max: 3e-3 },
-			{ key: "rhoOx", symbol: "ρ<sub>ox</sub>", label: "산화막 비저항", unit: "Ω·m", scale: 1, min: 1, max: 1e5, log: true, note: "범위 가정 (A37)" },
+			{ key: "rhoOx", symbol: "ρ<sub>ox</sub>", label: "산화막 비저항", unit: "Ω·m", scale: 1, min: 1, max: 1e11, log: true, note: "NiO 0.8, ZrO₂ 실측 9×10⁹ (A44)" },
 			{ key: "kappaCf", symbol: "κ<sub>CF</sub>", label: "CF 열전도도", unit: "W/(K·m)", scale: 1, min: 1, max: 50 },
-			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 0.1, max: 30, log: true, note: "HfO₂ 0.5–0.95 [11], [12]" },
+			{ key: "kappaOx", symbol: "κ<sub>ox</sub>", label: "산화막 열전도도", unit: "W/(K·m)", scale: 1, min: 0.1, max: 30, log: true, note: "ZrO₂ 박막 약 1.4, HfO₂ 0.5–0.95 (A62)" },
 			{ key: "T0", symbol: "T<sub>0</sub>", label: "소자 온도", unit: "K", scale: 1, min: 150, max: 450 },
-			{ key: "Tcap", symbol: "T<sub>cap</sub>", label: "온도 상한 (산화막 녹는점, 0 = 끔)", unit: "K", scale: 1, min: 0, max: 4000, note: "NiO 2228, HfO₂ 3047 (A59)" },
+			{ key: "Tcap", symbol: "T<sub>cap</sub>", label: "온도 상한 (산화막 녹는점, 0 = 끔)", unit: "K", scale: 1, min: 0, max: 4000, note: "NiO 2228, ZrO₂ 2988 (A59)" },
 		],
 	},
 	{

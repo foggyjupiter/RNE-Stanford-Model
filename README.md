@@ -72,7 +72,7 @@ npm run build     # dist/ 에 정적 파일 생성
 - **RESET의 급격함과 HRS 값은 격자에 따라 달라집니다** (A35). V_reset은 격자에 무관합니다.
   갭 호핑(A55)을 켜면 HRS가 격자에 수렴합니다(우리 소자 RESET: 길이 방향 40–160칸에서 0.57–0.64 MΩ). 호핑을 켠 SET은 계산되지만 느리고(파이썬 십수 분) V_set이 실측보다 낮아져 E_a를 다시 맞춰야 해서, 프리셋은 과도 계산에서 호핑을 끕니다.
 - **SET 동작은 선형 암시적 Euler로 적분합니다** (A60). 성장과 용해가 맞서는 평형 근처의 강성 때문에 명시적 Euler는 결과가 스텝에 따라 달라졌습니다(우리 소자 CC SET 뒤 4.6–6.1 kΩ, 작은 스텝에서는 진행 멈춤). 지금은 CC 유지 뒤 저항이 스텝 상한과 구현(파이썬/TS)에 따라 약 ±10% 안입니다. SET 스텝마다 장을 두 번 풀어 NiO 한 사이클이 약 1.7배 느립니다(TS 8.7 → 14.5 s).
-- 온도는 산화막 녹는점(NiO 2228 K, HfO₂ 3047 K)에서 자릅니다 (A59). 녹은 부분의 물성 변화와 잠열은 다루지 않습니다.
+- 온도는 산화막 녹는점(NiO 2228 K, ZrO₂ 2988 K)에서 자릅니다 (A59). 녹은 부분의 물성 변화와 잠열은 다루지 않습니다.
 - SET/RESET은 동작으로 나눕니다(A25). 같은 전압에서 두 식을 함께 쓰면 RESET이 일어나지 않습니다.
 - SET 식([2], HfOx 기준 파라미터)을 RESET 모델([6], NiO 소자)과 합친 것은 가정입니다.
 - N개의 병렬 필라멘트는 동일하다고 보고 경쟁·열 간섭은 무시합니다 (A10).
@@ -103,3 +103,6 @@ npm run build     # dist/ 에 정적 파일 생성
 - [9] N. Sun et al., "DC reactively sputtered TiNx thin films for capacitor electrodes," J. Mater. Sci.: Mater. Electron., vol. 29, pp. 10170–10176, 2018. DOI 10.1007/s10854-018-9066-4 (TiN 비저항 125 µΩ·cm)
 - [10] P. Goel, C. Kauppinen, R. Raju, and I. Tittonen, "Thermoelectric and electronic transport properties of thermal and plasma-enhanced ALD grown titanium nitride thin films," Nanoscale Adv., vol. 8, no. 2, pp. 612–622, 2026. DOI 10.1039/D5NA00914F (ALD TiN 열전도도 7.0–27 W/(K·m))
 - [11] D. Niraula and V. G. Karpov, "Heat transfer in filamentary RRAM devices," IEEE TED, vol. 64, no. 10, pp. 4106–4113, 2017.
+- [12] P. J. Patil et al., "Effect of conductive filament temperature on ZrO2 based resistive random access memory devices," J. Nano- Electron. Phys., vol. 12, no. 2, 02008, 2020. DOI 10.21272/jnep.12(2).02008 (벌크 ZrO₂ 열전도도)
+- [13] J. Cho, J. Park, J. An, J. Eur. Ceram. Soc., 2017 (ALD YSZ 박막 열전도도 1.35–1.5 W/(K·m), TDTR)
+- [14] X. Zhao, D. Ceresoli, D. Vanderbilt, "Structural, electronic, and dielectric properties of amorphous ZrO2 from ab initio molecular dynamics," Phys. Rev. B, vol. 71, 085107, 2005 (비정질 ZrO₂ 유전율)
