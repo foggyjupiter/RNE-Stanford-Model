@@ -302,6 +302,10 @@ summary:focus-visible {
 	color: var(--text-3);
 }
 
+.group > .group-note {
+	margin: 4px 0 12px;
+}
+
 .group > .link-btn {
 	margin: 2px 0 12px -4px;
 }

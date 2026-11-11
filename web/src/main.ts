@@ -392,6 +392,8 @@ function buildParams(): void {
 			});
 			paramFields.push(sw);
 			d.append(sw.el);
+			// 호핑을 켠 SET은 갭 가열과 강성 때문에 아주 느리다 (A55, A60)
+			if (key === "hop") d.append(el("p", "note group-note", "켜면 HRS가 격자에 수렴하지만(A55), SET이 들어간 계산(I-V 스윕, SET 펄스, 쓰기-읽기)은 수십 분 걸릴 수 있습니다(A60). RESET만 볼 때 권장합니다."));
 		}
 		const fields = g.items.map((m) => {
 			const f = paramField(m);
