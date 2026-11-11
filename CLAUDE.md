@@ -31,7 +31,7 @@
 
 - `rram_model.py`: 모델 본체. 순수 함수 위주
 - `reference.ipynb`: 검증용 노트북. 분석·처리 단계가 바뀌면 셀을 나눈다
-- 경계 이동은 적응 스텝 명시적 Euler (스텝당 경계 이동·전압 변화 상한), 직렬 저항 방정식은 `scipy.optimize.brentq` (ASSUMPTIONS A34)
+- 경계 이동은 적응 스텝 Euler (스텝당 경계 이동·전압 변화 상한). SET 동작은 대각 야코비안 선형 암시적 Euler, RESET 동작은 명시적 Euler. 직렬 저항 방정식은 `scipy.optimize.brentq` (ASSUMPTIONS A34, A60)
 - 확인할 것
   - unipolar 스윕(0 → +V_RESET → 0 → +V_SET → 0)에서 RESET → SET 히스테리시스, RESET은 Russo Fig. 3과 정성적으로 비슷하게 (급격한 붕괴)
   - 램프 속도를 바꾸면 RESET 전압이 이동하는지 (Russo Fig. 5)
@@ -42,7 +42,7 @@
 ### 2단계 — JS 코어 (`web/src/model/`)
 
 - 1단계 로직을 TypeScript로 옮긴다. UI와 완전히 분리된 순수 모듈
-- 경계 이동: 파이썬과 같은 적응 스텝 (스위칭 구간에서 경계 이동량으로 스텝 상한)
+- 경계 이동: 파이썬과 같은 적응 스텝과 같은 SET 선형 암시적 스텝 (스위칭 구간에서 경계 이동량으로 스텝 상한)
 - 직렬 저항 방정식은 이분법(또는 안전장치 있는 뉴턴)
 - `golden/` CSV와 비교하는 테스트 작성 (vitest). 허용 오차는 상대오차 기준으로 정하고 근거를 주석에
 - 계산이 무거우면 Web Worker로 뺀다

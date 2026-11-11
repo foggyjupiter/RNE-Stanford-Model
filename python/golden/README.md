@@ -19,7 +19,7 @@
 | `pulse_reset.csv` | RESET 3 V, 평탄부 10 µs, 상승·하강 10 ns | 포밍된 LRS | 0 | 포함 (20 fF) |
 | `pulse_set.csv` | SET 2.5 V, 평탄부 1 µs, 상승·하강 10 ns | `hrs_profile.csv` | 3 kΩ | 포함 |
 
-`our_set_cc_stop*.csv`의 CC 유지 구간은 기본 스텝 상한(1 nm) 결과이며 스텝에 수렴한 값이 아닙니다 (A60). 두 구현이 같은 규칙으로 계산하는지 확인하는 용도입니다.
+SET 동작은 선형 암시적 Euler로 적분합니다 (A60). `our_set_cc_stop*.csv`의 CC 유지 뒤 상태는 스텝 상한과 구현에 따라 약 ±10% 흔들려서, TS 테스트는 CC 도달 전압·도달 순간 반경·최대 전류로 비교합니다.
 
 ## 정적 파일
 

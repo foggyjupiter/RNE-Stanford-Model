@@ -251,6 +251,8 @@ class Fields:
 OFF = 1e-9	# 계산에서 빼는 셀의 전도도 배율 [-] (A41)
 R_ZERO = 1e-6	# 이보다 작은 경계 반경(Delta_r 배수)은 0으로 둔다 [-] (A57)
 SYM_EPS = 1e-6	# 호핑을 켤 때 위아래 대칭을 깨는 상대 속도 차 [-] (A61)
+JAC_DR = 1e-11	# SET 선형 암시적 스텝의 야코비안 차분 이동 [m] (0.01 nm, A60)
+JAC_NEAR = 0.1	# 선형화한 평형까지 거리가 drb_max의 이 배수 안인 행은 스텝 상한에서 뺀다 [-] (A60)
 
 
 def _face_current(Gb, Gz, Gt, V, va):
@@ -520,6 +522,22 @@ def solve_cell_cc(fs, p, i_cc, v_hi, cp=0.0, dt=0.0, v_prev=0.0):
 
 
 # ---------------------------------------------------------------- 시뮬레이터
+def _cell_state(g, p, gs, rb, T_init, va, r_ser, cc, i_cc, cp, dt, v_prev):
+	"""형상 rb에서 회로를 푼다: (V_c, Fields, FieldSolver, 단자 전류, CC 제한 여부).
+
+	cc이면 제한 없이 푼 단자 전류가 i_cc를 넘을 때 전류를 i_cc에 고정한다 (A40). T_init: 온도 초기값.
+	"""
+	fs = FieldSolver(g, p, rb, gs)
+	fs.T_last = T_init
+	vc, fld = solve_cell(fs, p, va, r_ser, cp, dt, v_prev)
+	i_term = (va - vc) / r_ser
+	limited = cc and i_term > i_cc
+	if limited:
+		vc, fld = solve_cell_cc(fs, p, i_cc, vc, cp, dt, v_prev)
+		i_term = i_cc
+	return vc, fld, fs, i_term, limited
+
+
 @dataclass
 class Result:
 	t: np.ndarray	# 시간 [s]
@@ -540,12 +558,16 @@ CSV_HEADER = "t_s,v_app_V,v_cell_V,i_A,r_min_m,T_max_K"
 
 
 def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, include_cp=False,
-		dv_max=1e-2, drb_max=None, n_snap=0, i_cc=None, cc_hold=None, dvc_max=None):
+		dv_max=1e-2, drb_max=None, n_snap=0, i_cc=None, cc_hold=None, dvc_max=None, implicit=True):
 	"""CF 경계를 시간에 따라 움직이며 응답을 계산한다.
 
 	rb0: 초기 경계 반경 (스칼라 또는 높이별 배열). None이면 포밍된 CF (phi0/2).
-	시간 적분: 경계 이동은 명시적 Euler + 적응 스텝 (A34):
-		한 스텝에서 전압 변화 <= dv_max, 경계 이동 <= drb_max (기본: 반경 격자의 1/4).
+	시간 적분: 경계 이동은 적응 스텝 Euler (A34, A60):
+		한 스텝에서 전압 변화 <= dv_max, 경계 이동 <= drb_max (기본: drFine/4, 호핑을 켜면 gT/5 이하).
+		SET 동작은 선형 암시적 Euler rb += dt*v/(1 - dt*min(J, 0)) (implicit=True). J는 대각 야코비안으로,
+		속도 방향으로 조금 움직인 형상을 한 번 더 풀어 얻은 차분. 성장과 용해가 맞서는 평형 근처의 강성을 누른다.
+		평형에서 먼 행은 명시적과 같은 이동 상한, 가까운 행(|v/J| < JAC_NEAR*drb_max)은 상한에서 뺀다.
+		RESET 동작(용해만)은 J >= 0(가늘수록 뜨거워져 빨라짐)이라 보정할 것이 없어 명시적 Euler로 둔다.
 	include_cp: CP를 후진 Euler로 포함 (펄스용).
 	n_snap: 등간격 시각에 (rb, T) 스냅숏 저장 개수.
 	i_cc: SET 동작의 전류 제한 [A] (A40). 주면 SET 동작에서 Rs 대신 단자 전류를 i_cc로 자른다.
@@ -554,6 +576,7 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		인가 전압을 그 값에 고정하고 cc_hold [s] 뒤에 끝낸다 (측정 한 점 동안 CC가 유지되는 시간).
 	dvc_max: 주면 한 스텝의 셀 전압 변화도 이 값 [V] 이하가 되도록 다음 스텝을 줄인다
 		(C_P 방전처럼 빠른 과도를 따라가기 위해, A52). info["i_cell"]에 필라멘트 전류(N*I)를 남긴다.
+	implicit: False면 SET 동작도 명시적 Euler (비교용).
 	"""
 	g = make_grid(p, gs)
 	nz = len(g.zc)
@@ -585,18 +608,12 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		cc = i_cc is not None and op == "set"
 		r_ser = p.RL + (0.0 if cc else series_r(op, Rs, Rs_reset))
 		cp = p.CP if include_cp else 0.0
-		fs = FieldSolver(g, p, rb, gs)
-		fs.T_last = T_prev
-		vc_new, fld = solve_cell(fs, p, va, r_ser, cp, dt, vc)
-		i_term = (va - vc_new) / r_ser
-		limited = cc and i_term > i_cc
-		if limited:
-			vc_new, fld = solve_cell_cc(fs, p, i_cc, vc_new, cp, dt, vc)
-			i_term = i_cc
+		vc_new, fld, fs, i_term, limited = _cell_state(g, p, gs, rb, T_prev, va, r_ser, cc, i_cc, cp, dt, vc)
 		if limited and cc_hold is not None and v_freeze is None:
 			v_freeze = va
 			t_stop = min(wf.t_end, t + cc_hold)
 		dvc = abs(vc_new - vc)
+		vc_old = vc
 		vc = vc_new
 		T_prev = fs.T_last	# 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		out["t"].append(t)
@@ -612,10 +629,25 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		if t >= t_stop:
 			break
 		vel = boundary_velocity(op, rb, g, fld, p)
-		lims = [t_stop - t]
 		vm = float(np.max(np.abs(vel)))
-		if vm > 0:
-			lims.append(drb_max / vm)
+		jn = np.zeros(nz)
+		if implicit and op == "set" and vm > 0:
+			# 대각 야코비안 (A60): 가장 빠른 행이 JAC_DR만큼 가도록 속도 방향으로 움직인 형상 rb + JAC_DR*v/max|v|를
+			# 같은 회로 조건(인가 전압, 지난 셀 전압, dt)에서 한 번 더 풀어 J*v를 얻고, J_jj ~ (J v)_j / v_j.
+			# 모든 행을 똑같이 움직이면 빠르게 움직이는 잘록한 행의 감쇠를 과장한다
+			rb_p = np.clip(rb + JAC_DR * vel / vm, 0.0, p.R_dom)
+			fld_p = _cell_state(g, p, gs, rb_p, T_prev, va, r_ser, cc, i_cc, cp, dt, vc_old)[1]
+			jv = (boundary_velocity(op, rb_p, g, fld_p, p) - vel) * (vm / JAC_DR)
+			moving = np.abs(vel) > 1e-6 * vm
+			jn = np.where(moving, np.minimum(jv / np.where(moving, vel, 1.0), 0.0), 0.0)
+		lims = [t_stop - t]
+		# 경계 이동 상한 (A34, A60): 선형화한 평형까지 거리 |v/J|가 JAC_NEAR*drb_max보다 먼 행은 명시적과 같이
+		# dt <= drb_max/|v| (감속하며 자라는 궤적을 성기게 건너뛰지 않도록). 가까운 행은 암시적 갱신이 많아야 |v/J|만
+		# 움직이므로 상한을 두지 않는다 (강성: 평형 근처에서 큰 스텝). J = 0이면 명시적과 같음
+		av, aj = np.abs(vel), np.abs(jn)
+		far = av > JAC_NEAR * drb_max * aj
+		if np.any(far):
+			lims.append(drb_max / float(np.max(av[far])))
 		if v_freeze is None:
 			slope = abs(wf.v(t + 1e-12 * max(wf.t_end, 1e-9)) - va) / (1e-12 * max(wf.t_end, 1e-9))
 			if slope > 0:
@@ -626,7 +658,7 @@ def simulate(wf, rb0=None, p=DEFAULT, gs=DEFAULT_GRID, Rs=RS_SET, Rs_reset=0.0, 
 		if dvc_max is not None and dt > 0 and dvc > dvc_max:
 			lims.append(dt * dvc_max / dvc)
 		dt = max(min(lims), 1e-15)
-		rb = np.clip(rb + vel * dt, 0.0, p.R_dom)
+		rb = np.clip(rb + vel * dt / (1.0 - dt * jn), 0.0, p.R_dom)
 		# 사실상 0인 반경은 0으로: 갭 칸이 0과 1e-26 m 사이를 오가며 스텝 크기를 흔드는 것을 막는다 (A57)
 		rb[rb < R_ZERO * p.dr] = 0.0
 		t = min(t + dt, t_stop)

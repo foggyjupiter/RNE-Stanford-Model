@@ -154,6 +154,7 @@ export interface SimOptions {
 	includeCp?: boolean;	// CP 포함 (펄스)
 	dvMax?: number;	// 한 스텝 전압 변화 상한 [V]
 	drbMax?: number;	// 한 스텝 경계 이동 상한 [m], 기본 drFine/4 (호핑을 켜면 gT/5 이하)
+	implicit?: boolean;	// SET 동작을 선형 암시적 Euler로 (기본 true, A60). false면 명시적 (비교용)
 	grid?: GridSpec;
 	onProgress?: (frac: number) => void;
 }
@@ -173,9 +174,39 @@ export interface SimResult {
 	split?: number;	// 이어 붙인 결과에서 두 번째 부분(SET)이 시작하는 인덱스 (concatResults)
 }
 
+const JAC_DR = 1e-11;	// SET 선형 암시적 스텝의 야코비안 차분 이동 [m] (0.01 nm, A60)
+const JAC_NEAR = 0.1;	// 선형화한 평형까지 거리가 drbMax의 이 배수 안인 행은 스텝 상한에서 뺀다 [-] (A60)
+
+interface CellState {
+	vc: number;	// 셀 전압 [V]
+	fld: Fields;
+	fs: FieldSolver;
+	iTerm: number;	// 단자 전류 [A]
+	limited: boolean;	// CC에 걸렸는지
+}
+
+// 형상 rb에서 회로를 푼다. cc이면 제한 없이 푼 단자 전류가 iCc를 넘을 때 전류를 iCc에 고정한다 (A40)
+function cellState(g: Grid, p: Params, gs: GridSpec, rb: Float64Array, tInit: Float64Array | null, va: number, rSer: number,
+		cc: boolean, iCc: number, cp: number, dt: number, vPrev: number): CellState {
+	const fs = new FieldSolver(g, p, rb, gs);
+	fs.tLast = tInit;
+	let sol = solveCell(fs, p, va, rSer, cp, dt, vPrev);
+	let iTerm = (va - sol.vc) / rSer;
+	const limited = cc && iTerm > iCc;
+	if (limited) {
+		// 측정기가 출력 전압을 낮춰 전류를 iCc에 고정. vApp에는 설정 전압을 그대로 기록한다
+		sol = solveCellCc(fs, p, iCc, sol.vc, cp, dt, vPrev);
+		iTerm = iCc;
+	}
+	return { vc: sol.vc, fld: sol.fld, fs, iTerm, limited };
+}
+
 const R_ZERO = 1e-6;	// 이보다 작은 경계 반경(Δr 배수)은 0으로 둔다 [-]: 갭 칸이 0과 1e-26 m 사이를 오가며 스텝을 흔드는 것을 막는다 (A57)
 
-// CF 경계를 시간에 따라 움직이며 응답을 계산한다. 경계 이동은 명시적 Euler + 적응 스텝 (A34)
+// CF 경계를 시간에 따라 움직이며 응답을 계산한다. 경계 이동은 적응 스텝 Euler (A34, A60):
+// SET 동작은 선형 암시적 Euler rb += dt*v/(1 - dt*min(J, 0)), J는 속도 방향으로 조금 움직인 형상을 한 번 더 풀어
+// 얻은 차분(대각 야코비안). 성장과 용해가 맞서는 평형 근처의 강성을 누른다. RESET 동작(용해만)은
+// J >= 0(가늘수록 뜨거워져 빨라짐)이라 보정할 것이 없어 명시적 Euler로 둔다.
 export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p: Params, o: SimOptions = {}): SimResult {
 	const gs = o.grid ?? DEFAULT_GRID;
 	const g = makeGrid(p, gs);
@@ -187,6 +218,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 	// 호핑을 켜면 갭 길이·끝 반경 오차가 exp(-g/gT)로 HRS에 들어가므로 gT/5 이하 (A55)
 	if (p.hop) drbMax = Math.min(drbMax, 0.2 * p.gT);
 	if (o.drbMax !== undefined) drbMax = o.drbMax;
+	const implicit = o.implicit ?? true;
 	let rb = new Float64Array(nz);
 	if (rb0 === null) rb.fill(p.phi0 / 2);
 	else if (typeof rb0 === "number") rb.fill(rb0);
@@ -215,21 +247,14 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		const cc = o.iCc !== undefined && op === "set";
 		const rSer = p.RL + (cc ? 0 : seriesR(op, rs, rsReset));
 		const cp = o.includeCp ? p.CP : 0;
-		const fs = new FieldSolver(g, p, rb, gs);
-		fs.tLast = tPrev;
-		let sol = solveCell(fs, p, va, rSer, cp, dt, vc);
-		let iTerm = (va - sol.vc) / rSer;
-		const limited = cc && iTerm > o.iCc!;
-		if (limited) {
-			// 측정기가 출력 전압을 낮춰 전류를 iCc에 고정. vApp에는 설정 전압을 그대로 기록한다
-			sol = solveCellCc(fs, p, o.iCc!, sol.vc, cp, dt, vc);
-			iTerm = o.iCc!;
-		}
+		const sol = cellState(g, p, gs, rb, tPrev, va, rSer, cc, o.iCc ?? 0, cp, dt, vc);
+		const { fs, iTerm, limited } = sol;
 		if (limited && o.ccHold !== undefined && vFreeze === null) {
 			vFreeze = va;
 			tStop = Math.min(wf.tEnd, t + o.ccHold);
 		}
 		const dvc = Math.abs(sol.vc - vc);
+		const vcOld = vc;
 		vc = sol.vc;
 		tPrev = fs.tLast;	// 전극층 포함 전체 격자 온도 (다음 스텝 초기값)
 		ts.push(t);
@@ -248,10 +273,31 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		if (t >= tStop) break;
 		o.onProgress?.(t / wf.tEnd);
 		const vel = boundaryVelocity(op, rb, g, sol.fld, p);
-		let dtNext = tStop - t;
 		let vm = 0;
 		for (let j = 0; j < nz; j++) vm = Math.max(vm, Math.abs(vel[j]));
-		if (vm > 0) dtNext = Math.min(dtNext, drbMax / vm);
+		const jn = new Float64Array(nz);
+		if (implicit && op === "set" && vm > 0) {
+			// 대각 야코비안 (A60): 가장 빠른 행이 JAC_DR만큼 가도록 속도 방향으로 움직인 형상 rb + JAC_DR*v/max|v|를
+			// 같은 회로 조건(인가 전압, 지난 셀 전압, dt)에서 한 번 더 풀어 J*v를 얻고, J_jj ~ (J v)_j / v_j.
+			// 모든 행을 똑같이 움직이면 빠르게 움직이는 잘록한 행의 감쇠를 과장한다
+			const rbP = new Float64Array(nz);
+			for (let j = 0; j < nz; j++) rbP[j] = Math.min(Math.max(rb[j] + JAC_DR * vel[j] / vm, 0), p.Rdom);
+			const fldP = cellState(g, p, gs, rbP, tPrev, va, rSer, cc, o.iCc ?? 0, cp, dt, vcOld).fld;
+			const velP = boundaryVelocity(op, rbP, g, fldP, p);
+			for (let j = 0; j < nz; j++) {
+				if (Math.abs(vel[j]) > 1e-6 * vm) jn[j] = Math.min((velP[j] - vel[j]) * (vm / JAC_DR) / vel[j], 0);
+			}
+		}
+		let dtNext = tStop - t;
+		// 경계 이동 상한 (A34, A60): 선형화한 평형까지 거리 |v/J|가 JAC_NEAR*drbMax보다 먼 행은 명시적과 같이
+		// dt <= drbMax/|v| (감속하며 자라는 궤적을 성기게 건너뛰지 않도록). 가까운 행은 암시적 갱신이 많아야 |v/J|만
+		// 움직이므로 상한을 두지 않는다 (강성: 평형 근처에서 큰 스텝). J = 0이면 명시적과 같음
+		let vFar = 0;
+		for (let j = 0; j < nz; j++) {
+			const av = Math.abs(vel[j]);
+			if (av > JAC_NEAR * drbMax * Math.abs(jn[j])) vFar = Math.max(vFar, av);
+		}
+		if (vFar > 0) dtNext = Math.min(dtNext, drbMax / vFar);
 		if (vFreeze === null) {
 			const slope = Math.abs(wf.v(t + eps) - va) / eps;
 			if (slope > 0) dtNext = Math.min(dtNext, dvMax / slope);
@@ -261,7 +307,7 @@ export function simulate(wf: Waveform, rb0: number | ArrayLike<number> | null, p
 		if (o.dvcMax !== undefined && dt > 0 && dvc > o.dvcMax) dtNext = Math.min(dtNext, dt * o.dvcMax / dvc);
 		dt = Math.max(dtNext, 1e-15);
 		for (let j = 0; j < nz; j++) {
-			rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt, 0), p.Rdom);
+			rb[j] = Math.min(Math.max(rb[j] + vel[j] * dt / (1 - dt * jn[j]), 0), p.Rdom);
 			if (rb[j] < R_ZERO * p.dr) rb[j] = 0;	// 사실상 0인 반경은 0으로 (A57)
 		}
 		t = Math.min(t + dt, tStop);
